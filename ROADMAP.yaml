@@ -1,0 +1,53 @@
+project: MutationTesting
+description: Julia mutation-testing package — JuliaSyntax operators, coverage-guided runner, survival reports
+phases:
+  - id: m0
+    name: "M0 Operators + discovery + patcher"
+    status: in-progress
+    depends_on: []
+    items:
+      - name: "Operator set v1 (relational, boolean, arithmetic, literal-boundary, return, stmt-delete)"
+        done: false
+      - name: "Site discovery over JuliaSyntax green tree (deterministic ids)"
+        done: false
+      - name: "Byte-range patcher with apply/revert round-trip"
+        done: false
+      - name: "EDD GATE: self-mutate run enumerates >50 sites on own src/, round-trip lossless"
+        done: false
+      - name: "EDD GATE: falsifiability fixtures — every operator has planted-mutant test"
+        done: false
+  - id: m1
+    name: "M1 Cold runner + coverage-guided selection + report"
+    status: not-started
+    depends_on: [m0]
+    items:
+      - name: "Baseline run + line→testfile coverage map"
+        done: false
+      - name: "Process-per-mutant runner, timeout 3x baseline"
+        done: false
+      - name: "JSON + Markdown report (killed/survived/timeout/no-coverage/unviable)"
+        done: false
+      - name: "EDD GATE: dogfood on WIQ or JUI, kill-rate reported with pasted output"
+        done: false
+  - id: m2
+    name: "M2 Warm-worker pool + incremental cache"
+    status: not-started
+    depends_on: [m1]
+    items:
+      - name: "Worker pool with eval-into-module warm path + classified cold fallback"
+        done: false
+      - name: "Incremental cache keyed (file-hash, mutant-id)"
+        done: false
+      - name: "EDD GATE: >=5x speedup vs M1 on mid-size package, benchmark pasted"
+        done: false
+  - id: m3
+    name: "M3 Release: docs, ANN, registration, JuliaTesting pitch"
+    status: not-started
+    depends_on: [m2]
+    items:
+      - name: "Docs + CI GitHub Action recipe"
+        done: false
+      - name: "General registry registration"
+        done: false
+      - name: "EDD GATE: Sisyphus T4 julia.toml wired, one eidos Julia repo passes T4 via this tool"
+        done: false
