@@ -105,7 +105,7 @@ function _walk!(
 
             # The splice target is the matched node itself
             br = JuliaSyntax.byte_range(node)
-            br_clamped = max(1, first(br)):min(length(src), last(br))
+            br_clamped = max(1, first(br)):min(ncodeunits(src), last(br))
             isempty(br_clamped) && continue
 
             original = src[br_clamped]

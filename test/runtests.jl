@@ -547,4 +547,42 @@ end
           :arith_plus_minus in op_ids_found  # sanity: at least something found
 end
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# UTF-8 SOURCE HANDLING
+# Falsifiability rule: bug #1 (apply clamp) must cause failure when reverted.
+# Fixture: Czech comment before mutation site ensures last(byte_range) > length(src)
+# (char count), which is the exact condition that triggered the spurious MutationError.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@testset "UTF-8 source handling" begin
+    # Source with multibyte Czech chars BEFORE the mutation site.
+    # ncodeunits("# příliš žluťoučký kůň\n") = 30, length = 21
+    # So for a < at byte 42: last(byte_range)=42 > length(src)=37
+    # The old code clamped to min(length(src), last(br)) = 37, cutting off
+    # the < site entirely → source[sr] != site.original → spurious MutationError.
+    src = "# příliš žluťoučký kůň\nf(x) = x < 10\n"
+
+    # Confirm the fixture actually exercises the bug condition
+    @test ncodeunits(src) > length(src)  # multibyte chars present
+
+    sites = sites_for_op(src, OP_LT_TO_LE)
+    @test !isempty(sites)  # site must be discovered
+
+    site = sites[1]
+    # The < is deep in byte space — confirm the condition that triggered old bug
+    @test last(site.byte_range) > length(src)
+
+    # apply + revert must both succeed (codeunit-correct clamp)
+    @test roundtrip_ok(site, src)
+
+    # Confirm apply produces correct mutation
+    mutated = apply(site, src)
+    @test occursin("<=", mutated)
+    @test !occursin(r"(?<![<])<=(?!=)", src)  # original has < not <=
+
+    # Confirm revert restores exactly
+    restored = revert(site, mutated)
+    @test restored == src
+end
+
 end  # @testset "Gremlins M0"

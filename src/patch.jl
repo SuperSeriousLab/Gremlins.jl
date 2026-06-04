@@ -23,7 +23,7 @@ Throws `MutationError` if the byte range doesn't match `site.original`
 function apply(site::MutationSite, source::AbstractString)::String
     br = site.byte_range
     # Validate: check that the source region still matches expected original
-    sr = max(1, first(br)):min(length(source), last(br))
+    sr = max(1, first(br)):min(ncodeunits(source), last(br))
     if source[sr] != site.original
         throw(MutationError(
             "apply: source mismatch at $(site.relpath):$(first(br))-$(last(br)); " *
@@ -48,11 +48,11 @@ function revert(site::MutationSite, mutated::AbstractString)::String
     # The replacement occupies a different range in the mutated string.
     # Compute: prefix length is same as before (apply didn't touch prefix).
     prefix_len = first(site.byte_range) - 1
-    rep_len    = length(site.replacement)  # byte length
+    rep_len    = ncodeunits(site.replacement)  # byte length
     rep_start  = prefix_len + 1
     rep_end    = prefix_len + rep_len
 
-    if rep_end > length(mutated)
+    if rep_end > ncodeunits(mutated)
         throw(MutationError(
             "revert: mutated source too short; expected replacement '$(site.replacement)' at $rep_start:$rep_end"
         ))
