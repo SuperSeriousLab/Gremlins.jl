@@ -209,18 +209,22 @@ Returns sites sorted globally by (relpath, byte start, op_id).
 function discover(
     dir_or_file::AbstractString;
     operators::Vector{MutationOperator} = DEFAULT_OPERATORS,
+    root::Union{AbstractString, Nothing} = nothing,
 )::Vector{MutationSite}
     if isfile(dir_or_file)
-        return discover_file(dir_or_file; root = dirname(dir_or_file), operators = operators)
+        r = isnothing(root) ? dirname(dir_or_file) : root
+        return discover_file(dir_or_file; root = r, operators = operators)
     end
 
     isdir(dir_or_file) || throw(MutationError("'$dir_or_file' is neither a file nor a directory"))
 
-    root = dir_or_file
+    # relpath root: if explicitly provided, use it; otherwise default to dir_or_file
+    relpath_root = isnothing(root) ? dir_or_file : root
+    walk_root    = dir_or_file
     all_sites = MutationSite[]
     jl_files = String[]
 
-    for (dirpath, dirnames, filenames) in walkdir(root)
+    for (dirpath, dirnames, filenames) in walkdir(walk_root)
         # Prune test directories
         filter!(d -> d != "test" && d != "tests", dirnames)
         for fn in filenames
@@ -231,7 +235,7 @@ function discover(
     sort!(jl_files)
 
     for fpath in jl_files
-        sites = discover_file(fpath; root = root, operators = operators)
+        sites = discover_file(fpath; root = relpath_root, operators = operators)
         append!(all_sites, sites)
     end
 

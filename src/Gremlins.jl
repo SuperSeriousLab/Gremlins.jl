@@ -6,6 +6,9 @@ using SHA
 include("operators.jl")
 include("discover.jl")
 include("patch.jl")
+include("coverage.jl")
+include("runner.jl")
+include("report.jl")
 
 # Types
 export MutationError
@@ -37,5 +40,26 @@ export revert
 export apply!
 export revert!
 export roundtrip_ok
+
+# Coverage (M1)
+export CoverageMap
+export baseline_run
+export covered_lines
+export is_covered
+
+# Runner (M1)
+export MutantOutcome
+export killed, survived, timeout, no_coverage, error
+export MutantResult
+export RunResult
+export run_mutations
+export mutate
+export mutation_score
+
+# Report (M1)
+export report
+export report_json
+export report_markdown
+export print_summary
 
 end # module Gremlins

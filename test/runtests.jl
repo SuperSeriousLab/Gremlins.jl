@@ -586,3 +586,6 @@ end
 end
 
 end  # @testset "Gremlins M0"
+
+# ─── M1 tests ────────────────────────────────────────────────────────────────
+include("runner_test.jl")

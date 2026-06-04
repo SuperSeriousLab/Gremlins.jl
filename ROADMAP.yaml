@@ -18,17 +18,17 @@ phases:
         done: true
   - id: m1
     name: "M1 Cold runner + coverage-guided selection + report"
-    status: not-started
+    status: completed
     depends_on: [m0]
     items:
       - name: "Baseline run + line→testfile coverage map"
-        done: false
+        done: true
       - name: "Process-per-mutant runner, timeout 3x baseline"
-        done: false
+        done: true
       - name: "JSON + Markdown report (killed/survived/timeout/no-coverage/unviable)"
-        done: false
+        done: true
       - name: "EDD GATE: dogfood on WIQ or JUI, kill-rate reported with pasted output"
-        done: false
+        done: true
   - id: m2
     name: "M2 Warm-worker pool + incremental cache"
     status: not-started
