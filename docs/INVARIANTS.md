@@ -1,4 +1,4 @@
-# MutationTesting — System Invariants
+# Gremlins — System Invariants
 
 ### I1 — Source restoration is absolute
 After any run (success, error, SIGINT), every mutated file is byte-identical

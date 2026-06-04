@@ -1,4 +1,4 @@
-using Test, MutationTesting
-@testset "MutationTesting" begin
+using Test, Gremlins
+@testset "Gremlins" begin
     include("operators_test.jl")
 end

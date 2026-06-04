@@ -1,4 +1,4 @@
-project: MutationTesting
+project: Gremlins
 description: Julia mutation-testing package — JuliaSyntax operators, coverage-guided runner, survival reports
 phases:
   - id: m0

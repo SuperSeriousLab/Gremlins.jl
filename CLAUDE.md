@@ -1,4 +1,4 @@
-# CLAUDE.md — MutationTesting
+# CLAUDE.md — Gremlins
 
 ## Purpose
 
@@ -14,7 +14,7 @@ JuliaTesting org pitch at M3). Design: /home/js/eidos/docs/design-julia-mutation
 julia --project -e 'using Pkg; Pkg.instantiate()'
 julia --project -e 'using Pkg; Pkg.test()'
 # self-mutate smoke (M0 acceptance):
-julia --project -e 'using MutationTesting; MutationTesting.discover("src") .|> println'
+julia --project -e 'using Gremlins; Gremlins.discover("src") .|> println'
 ```
 
 ## Key Files
