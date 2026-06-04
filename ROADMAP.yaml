@@ -3,19 +3,19 @@ description: Julia mutation-testing package — JuliaSyntax operators, coverage-
 phases:
   - id: m0
     name: "M0 Operators + discovery + patcher"
-    status: in-progress
+    status: completed
     depends_on: []
     items:
       - name: "Operator set v1 (relational, boolean, arithmetic, literal-boundary, return, stmt-delete)"
-        done: false
+        done: true
       - name: "Site discovery over JuliaSyntax green tree (deterministic ids)"
-        done: false
+        done: true
       - name: "Byte-range patcher with apply/revert round-trip"
-        done: false
+        done: true
       - name: "EDD GATE: self-mutate run enumerates >50 sites on own src/, round-trip lossless"
-        done: false
+        done: true
       - name: "EDD GATE: falsifiability fixtures — every operator has planted-mutant test"
-        done: false
+        done: true
   - id: m1
     name: "M1 Cold runner + coverage-guided selection + report"
     status: not-started
