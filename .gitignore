@@ -1,0 +1,54 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+/bin/
+/dist/
+/build/
+
+# Go
+/vendor/
+
+# Node
+node_modules/
+.next/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Rust
+/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets — never commit real keys
+.env
+.env.local
+*.key
+*.pem
+keystore.*
+credentials.json
+
+# Test artifacts
+coverage.out
+coverage.html
+*.test
+*.prof
+
+# Claude Code local state
+.claude/
+!.claude/hooks/
+!.claude/skills/
