@@ -30,15 +30,11 @@ statement deletion).
 
 ### The gap it fills
 
-JuliaTesting already covers:
-- Unit testing: `Test.jl` (stdlib)
-- Continuous testing: `Revise.jl`
-- Property-based testing: `PropCheck.jl`, `HypothesisTests.jl`
-- Code analysis: `Aqua.jl`, `JET.jl`
-
-The missing row: **mutation testing**. Vimes.jl, the only prior attempt, has been
-dead since November 2019. Discourse threads still point at it. Gremlins fills this
-gap permanently.
+The community testing toolchain covers unit testing (`Test`), quality assurance
+(`Aqua.jl`), static analysis (`JET.jl`), and property-based testing
+(`Supposition.jl`, `PropCheck.jl`). The missing row: **mutation testing**.
+Vimes.jl, the only prior attempt, has been dead since November 2019. Discourse
+threads still point at it.
 
 ### Why JuliaTesting org makes sense
 
@@ -60,18 +56,16 @@ gap permanently.
 
 ### Design decisions that differ from convention
 
-**Zero dependencies beyond stdlib** — Gremlins uses only `JuliaSyntax` (vendored
-with Julia 1.10+), `SHA` (stdlib), and `Base64` (stdlib). This is a deliberate
-choice: mutation testing tools that accumulate heavy dependencies (Malt.jl,
-Distributed, etc.) become maintenance liabilities. The warm-worker protocol is
-raw Julia subprocess + JSON-Lines over stdio.
+**One registered dependency** — `JuliaSyntax`, plus stdlib `SHA` and `Base64`.
+Deliberate: heavy dependency trees in testing tools become maintenance
+liabilities. The warm-worker protocol is a raw Julia subprocess + JSON-Lines
+over stdio.
 
 **No macro/struct/const mutations on warm path** — These fall back to cold per-process.
 The fallback taxonomy is visible in every report so it's explicit, not silent.
 
-**Honest about compile cost** — Julia's compile cost is real. Gremlins does not
-pretend otherwise. The README documents the benchmark numbers and the limitations.
-This builds trust vs tools that claim "fast" and deliver slow.
+**Honest about compile cost** — the README documents real benchmark numbers and
+limitations rather than claiming "fast" and delivering slow.
 
 ### Maintenance commitment
 

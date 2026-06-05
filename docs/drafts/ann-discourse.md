@@ -38,9 +38,8 @@ still point at dead Vimes. There has been nothing to fill the gap for six years.
 
 ### What Gremlins.jl does
 
-- **JuliaSyntax-based operators** — parses source via JuliaSyntax (vendored with
-  Julia 1.10+), mutates byte ranges directly. No regex over source, no
-  pretty-printing untouched code.
+- **JuliaSyntax-based operators** — parses source via JuliaSyntax, mutates byte
+  ranges directly. No regex over source, no pretty-printing untouched code.
 - **19 operators** covering relational flips (`<`↔`<=` etc.), boolean flips
   (`&&`↔`||`, `!` deletion), arithmetic (`+`↔`-`, `*`↔`/`), integer literal
   boundary (`42`→`43`/`41`), bool literal flip, `return x`→`return nothing`,
@@ -115,7 +114,7 @@ I'd be happy to discuss design tradeoffs:
 
 ---
 
-*Gremlins.jl v0.1.0. MIT license. Julia 1.10+. 389 tests.*
+*Gremlins.jl v0.1.0. MIT license. Julia 1.10+. 457 tests.*
 
 ---
 
