@@ -108,7 +108,14 @@ function _walk!(
             br_clamped = max(1, first(br)):min(ncodeunits(src), last(br))
             isempty(br_clamped) && continue
 
-            original = src[br_clamped]
+            # Byte-safe extraction: use codeunits to avoid StringIndexError on
+            # multibyte chars. JuliaSyntax returns codeunit-accurate byte ranges,
+            # but the clamp may land mid-char; skip if so.
+            original = try
+                String(codeunits(src)[br_clamped])
+            catch
+                continue
+            end
             replacement = ""
             try
                 replacement = op.replacer(node, src)

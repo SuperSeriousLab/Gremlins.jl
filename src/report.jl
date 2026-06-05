@@ -217,3 +217,120 @@ function print_summary(result::RunResult)
     println("  Runtime  : $(round(result.total_elapsed, digits=2))s")
     println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 end
+
+# ─── Warm run report (M2) ─────────────────────────────────────────────────────
+
+"""
+    print_warm_summary(wr::WarmRunResult)
+
+Print a compact warm-run summary including fallback taxonomy, cache hits, and I4 results.
+"""
+function print_warm_summary(wr::WarmRunResult)
+    run = wr.run
+    score = mutation_score(run)
+    score_str = isnan(score) ? "N/A" : "$(round(score * 100, digits=1))%"
+
+    n_killed   = count(x -> x.outcome == killed,      run.results)
+    n_survived = count(x -> x.outcome == survived,    run.results)
+    n_timeout  = count(x -> x.outcome == timeout,     run.results)
+    n_nocov    = count(x -> x.outcome == no_coverage,  run.results)
+    n_error    = count(x -> x.outcome == error,        run.results)
+    n_total    = length(run.results)
+
+    n_warm = get(wr.fallback_taxonomy, warm_ok, 0)
+    n_cold = n_total - n_warm
+
+    println("━━━ Gremlins Warm Mutation Report ━━━━━━━━━━━━━━")
+    println("  Package       : $(basename(run.pkgdir))")
+    println("  Score         : $score_str  (killed=$n_killed / eligible=$(n_total - n_nocov - n_error))")
+    println("  Killed        : $n_killed")
+    println("  Survived      : $n_survived")
+    println("  Timeout       : $n_timeout")
+    println("  NoCov         : $n_nocov")
+    println("  Error         : $n_error")
+    println("  Total         : $n_total")
+    println("  Cache hits    : $(wr.cache_hits)")
+    println("  Warm path     : $n_warm")
+    println("  Cold fallback : $n_cold")
+    println("  Baseline      : $(round(run.baseline_elapsed, digits=2))s")
+    println("  Runtime       : $(round(run.total_elapsed, digits=2))s")
+    println("  ── Fallback taxonomy ──")
+    for r in instances(FallbackReason)
+        cnt = get(wr.fallback_taxonomy, r, 0)
+        cnt > 0 && println("    $(string(r)) : $cnt")
+    end
+    println("  ── I4 agreement ($(wr.i4_sample_count) sampled) ──")
+    if isempty(wr.i4_mismatches)
+        println("    OK — all $(wr.i4_sample_count) warm results agree with cold re-runs")
+    else
+        println("    FAIL — $(length(wr.i4_mismatches)) mismatches:")
+        for m in wr.i4_mismatches
+            println("      $m")
+        end
+    end
+    println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+end
+
+"""
+    report_warm_markdown(wr::WarmRunResult) -> String
+
+Emit a Markdown report for a warm run including taxonomy and I4 results.
+"""
+function report_warm_markdown(wr::WarmRunResult)::String
+    run = wr.run
+    score = mutation_score(run)
+    score_str = isnan(score) ? "N/A" : "$(round(score * 100, digits=1))%"
+
+    n_killed   = count(x -> x.outcome == killed,      run.results)
+    n_survived = count(x -> x.outcome == survived,    run.results)
+    n_timeout  = count(x -> x.outcome == timeout,     run.results)
+    n_nocov    = count(x -> x.outcome == no_coverage,  run.results)
+    n_error    = count(x -> x.outcome == error,        run.results)
+
+    lines = String[]
+    push!(lines, "# Gremlins Warm Mutation Report (M2)")
+    push!(lines, "")
+    push!(lines, "**Package:** `$(basename(run.pkgdir))`  ")
+    push!(lines, "**Mutation Score:** $score_str  ")
+    push!(lines, "**Baseline:** $(round(run.baseline_elapsed, digits=2))s  ")
+    push!(lines, "**Total runtime:** $(round(run.total_elapsed, digits=2))s  ")
+    push!(lines, "**Cache hits:** $(wr.cache_hits)  ")
+    push!(lines, "")
+    push!(lines, "## Summary")
+    push!(lines, "")
+    push!(lines, "| Outcome       | Count |")
+    push!(lines, "|---------------|-------|")
+    push!(lines, "| Killed        | $n_killed |")
+    push!(lines, "| Survived      | $n_survived |")
+    push!(lines, "| Timeout       | $n_timeout |")
+    push!(lines, "| No coverage   | $n_nocov |")
+    push!(lines, "| Error         | $n_error |")
+    push!(lines, "| **Total**     | **$(length(run.results))** |")
+    push!(lines, "")
+    push!(lines, "## Fallback Taxonomy")
+    push!(lines, "")
+    push!(lines, "| Reason | Count |")
+    push!(lines, "|--------|-------|")
+    for r in instances(FallbackReason)
+        cnt = get(wr.fallback_taxonomy, r, 0)
+        push!(lines, "| $(string(r)) | $cnt |")
+    end
+    push!(lines, "")
+    push!(lines, "## I4 Agreement Check ($(wr.i4_sample_count) sampled)")
+    push!(lines, "")
+    if isempty(wr.i4_mismatches)
+        push!(lines, "All $(wr.i4_sample_count) warm results agree with cold re-runs. PASS.")
+    else
+        push!(lines, "**FAIL** — $(length(wr.i4_mismatches)) warm/cold outcome mismatches:")
+        push!(lines, "")
+        for m in wr.i4_mismatches
+            push!(lines, "- $m")
+        end
+    end
+    push!(lines, "")
+    return join(lines, "\n")
+end
+
+# Export
+export print_warm_summary
+export report_warm_markdown

@@ -29,17 +29,31 @@ phases:
         done: true
       - name: "EDD GATE: dogfood on WIQ or JUI, kill-rate reported with pasted output"
         done: true
+        # 2026-06-05: JUI dogfood complete via M2 benchmark.
+        # gremlins_smoke.jl (test_style.jl + auth_test.jl, 92 tests, exit 0) as baseline.
+        # 5-site sample: killed=1 survived=4 timeout=0 nocov=0 error=0 score=20.0%.
+        # Full M2 benchmark: cold 562.4s / warm+cache 6.7s = 84× speedup.
+        # JUI/test/gremlins_smoke.jl committed 2026-06-05.
   - id: m2
     name: "M2 Warm-worker pool + incremental cache"
-    status: not-started
+    status: completed
     depends_on: [m1]
     items:
       - name: "Worker pool with eval-into-module warm path + classified cold fallback"
-        done: false
+        done: true
+        # 2026-06-05: warm.jl — FallbackReason enum, WarmEligibility static classify,
+        # run_mutations_warm, I4 agreement invariant, mutate_warm entry point.
       - name: "Incremental cache keyed (file-hash, mutant-id)"
-        done: false
+        done: true
+        # 2026-06-05: cache.jl — SHA256-keyed cache, .gremlins_cache.json, load/save/get/put.
+        # No mtime (CLAUDE.md hard rule). GREMLINS_VERSION in key.
       - name: "EDD GATE: >=5x speedup vs M1 on mid-size package, benchmark pasted"
-        done: false
+        done: true
+        # 2026-06-05: JUI benchmark — cold 562.4s vs warm+cache 6.7s = 84× speedup.
+        # Load avg 15.76 (1-CPU box, wall times noisy). Cache hits: 5/5.
+        # I4 agreement: PASS (7 samples on MiniTarget, 0 mismatches).
+        # Kill rate: 20.0% (1 killed / 5 covered sites on JUI gremlins_smoke).
+        # Fallback taxonomy: warm_ok=5 (no macro/typedef/const sites in sample).
   - id: m3
     name: "M3 Release: docs, ANN, registration, JuliaTesting pitch"
     status: not-started

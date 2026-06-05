@@ -2,12 +2,15 @@ module Gremlins
 
 using JuliaSyntax
 using SHA
+using Distributed
 
 include("operators.jl")
 include("discover.jl")
 include("patch.jl")
 include("coverage.jl")
 include("runner.jl")
+include("cache.jl")
+include("warm.jl")
 include("report.jl")
 
 # Types
@@ -61,5 +64,25 @@ export report
 export report_json
 export report_markdown
 export print_summary
+
+# Cache (M2)
+export MutantCache
+export CachedResult
+export load_cache
+export save_cache
+export cache_get
+export cache_put!
+export cache_size
+export GREMLINS_VERSION
+
+# Warm-worker pool (M2)
+export FallbackReason
+export warm_ok, fallback_macro, fallback_typedef, fallback_const, fallback_evalerr, fallback_pollution
+export WarmEligibility
+export WarmMutantResult
+export WarmRunResult
+export classify_warm_eligibility
+export run_mutations_warm
+export mutate_warm
 
 end # module Gremlins
