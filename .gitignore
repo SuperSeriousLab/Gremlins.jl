@@ -3,9 +3,10 @@
 *.dll
 *.so
 *.dylib
-/bin/
 /dist/
 /build/
+# Allow Julia script directory (not compiled binaries)
+!/bin/*.jl
 
 # Go
 /vendor/

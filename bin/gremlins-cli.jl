@@ -1,0 +1,362 @@
+#!/usr/bin/env julia
+# gremlins-cli.jl — Gremlins mutation-testing CLI
+#
+# Usage:
+#   julia --project=<gremlins-dir> bin/gremlins-cli.jl \
+#         --pkg <dir> [--files a.jl,b.jl] [--test-file runtests.jl] \
+#         [--warm] [--json out.json] [--strong 0.80] [--acceptable 0.60]
+#
+# Exit codes:
+#   0 — strong or acceptable (kill_rate >= acceptable threshold)
+#   1 — weak (kill_rate < acceptable threshold)
+#   2 — infrastructure error
+#
+# BAND output line (always on stdout):
+#   BAND\tstrong|acceptable|weak\tkill_rate=<x>\tkilled=<k>/<n>
+#
+# NOTE: using/import must be at top-level in Julia scripts.
+# Gremlins is loaded unconditionally; if not found, an error is printed and exit(2).
+
+using Gremlins
+
+# ─── Arg parsing (pure functions, no external deps) ────────────────────────────
+
+"""
+    ParsedArgs
+
+Parsed CLI arguments.
+"""
+struct ParsedArgs
+    pkg::String
+    files::Vector{String}       # empty = all files
+    test_file::String
+    warm::Bool
+    json_out::Union{String, Nothing}
+    strong_threshold::Float64
+    acceptable_threshold::Float64
+end
+
+"""
+    _parse_args(argv::Vector{String}) -> ParsedArgs
+
+Parse CLI arguments. Throws ArgumentError on invalid input.
+"""
+function _parse_args(argv::Vector{String})::ParsedArgs
+    pkg = ""
+    files = String[]
+    test_file = "runtests.jl"
+    warm = false
+    json_out = nothing
+    strong = 0.80
+    acceptable = 0.60
+
+    i = 1
+    while i <= length(argv)
+        arg = argv[i]
+        if arg == "--pkg"
+            i += 1
+            i > length(argv) && throw(ArgumentError("--pkg requires a value"))
+            pkg = argv[i]
+        elseif arg == "--files"
+            i += 1
+            i > length(argv) && throw(ArgumentError("--files requires a value"))
+            raw = argv[i]
+            files = filter!(!isempty, split(raw, ","))
+        elseif arg == "--test-file"
+            i += 1
+            i > length(argv) && throw(ArgumentError("--test-file requires a value"))
+            test_file = argv[i]
+        elseif arg == "--warm"
+            warm = true
+        elseif arg == "--json"
+            i += 1
+            i > length(argv) && throw(ArgumentError("--json requires a value"))
+            json_out = argv[i]
+        elseif arg == "--strong"
+            i += 1
+            i > length(argv) && throw(ArgumentError("--strong requires a value"))
+            v = tryparse(Float64, argv[i])
+            (v === nothing || v < 0 || v > 1) && throw(ArgumentError("--strong must be a float in [0,1]"))
+            strong = v
+        elseif arg == "--acceptable"
+            i += 1
+            i > length(argv) && throw(ArgumentError("--acceptable requires a value"))
+            v = tryparse(Float64, argv[i])
+            (v === nothing || v < 0 || v > 1) && throw(ArgumentError("--acceptable must be a float in [0,1]"))
+            acceptable = v
+        elseif arg == "--help" || arg == "-h"
+            _print_usage()
+            exit(0)
+        else
+            throw(ArgumentError("unknown argument: $(repr(arg))"))
+        end
+        i += 1
+    end
+
+    isempty(pkg) && throw(ArgumentError("--pkg is required"))
+    acceptable > strong && throw(ArgumentError("--acceptable must be <= --strong"))
+
+    return ParsedArgs(pkg, files, test_file, warm, json_out, strong, acceptable)
+end
+
+function _print_usage()
+    println("""
+gremlins-cli — Mutation testing for Julia
+
+Usage:
+  julia --project=<gremlins-dir> bin/gremlins-cli.jl \\
+        --pkg <dir> [options]
+
+Options:
+  --pkg <dir>          Package directory to mutate (required)
+  --files a.jl,b.jl   Mutate ONLY sites whose relpath matches these file names
+                       (comma-separated). Empty = all files. Use this to scope
+                       CI runs to changed files.
+  --test-file <file>   Test entry point relative to test/ OR relative to pkg root
+                       (default: runtests.jl, resolved as test/runtests.jl)
+  --warm               Use warm-worker pool (5-6x faster, recommended)
+  --json <out.json>    Write JSON report to this file
+  --strong <float>     Kill-rate threshold for "strong" band (default: 0.80)
+  --acceptable <float> Kill-rate threshold for "acceptable" band (default: 0.60)
+  --help               Print this message
+
+Band output (always printed to stdout):
+  BAND\\tstrong|acceptable|weak\\tkill_rate=<x>\\tkilled=<k>/<n>
+
+Exit codes:
+  0  strong or acceptable
+  1  weak (below acceptable threshold)
+  2  infrastructure error
+""")
+end
+
+# ─── Band classification (pure function, testable without side effects) ─────────
+
+"""
+    classify_band(kill_rate, strong_threshold, acceptable_threshold) -> Symbol
+
+Return :strong, :acceptable, or :weak.
+"""
+function classify_band(
+    kill_rate::Float64,
+    strong_threshold::Float64,
+    acceptable_threshold::Float64,
+)::Symbol
+    isnan(kill_rate) && return :weak
+    kill_rate >= strong_threshold     && return :strong
+    kill_rate >= acceptable_threshold && return :acceptable
+    return :weak
+end
+
+"""
+    band_exit_code(band::Symbol) -> Int
+
+0 for strong/acceptable, 1 for weak.
+"""
+function band_exit_code(band::Symbol)::Int
+    band == :weak ? 1 : 0
+end
+
+"""
+    format_band_line(band, kill_rate, killed, n_eligible) -> String
+
+BAND output line (tab-separated).
+"""
+function format_band_line(
+    band::Symbol,
+    kill_rate::Float64,
+    killed::Int,
+    n_eligible::Int,
+)::String
+    kr_str = isnan(kill_rate) ? "nan" : string(round(kill_rate, digits=4))
+    "BAND\t$(band)\tkill_rate=$(kr_str)\tkilled=$(killed)/$(n_eligible)"
+end
+
+# ─── File filter ──────────────────────────────────────────────────────────────
+
+"""
+    _filter_sites_by_files(sites, file_patterns) -> Vector
+
+Keep only sites whose relpath basename or relpath suffix matches any of the
+given patterns. Patterns are basenames or relative paths from --files.
+Empty patterns = no filter (all sites).
+"""
+function _filter_sites_by_files(sites, file_patterns::Vector{String})
+    isempty(file_patterns) && return sites
+    return filter(sites) do site
+        any(file_patterns) do pat
+            # Match if relpath ends with pat or basename matches basename of pat
+            endswith(site.relpath, pat) || endswith(site.relpath, basename(pat))
+        end
+    end
+end
+
+# ─── Test file resolution ─────────────────────────────────────────────────────
+
+"""
+    _resolve_test_file(pkgdir, test_file) -> (test_dir::String, test_file::String)
+
+Resolve --test-file to (test_dir, bare_filename) for passing to Gremlins runners.
+
+Accepts:
+  - "runtests.jl"           → test_dir="test", test_file="runtests.jl"
+  - "test/runtests.jl"      → test_dir="test", test_file="runtests.jl"
+  - "test/gremlins_smoke.jl" → test_dir="test", test_file="gremlins_smoke.jl"
+"""
+function _resolve_test_file(pkgdir::String, test_file::String)::Tuple{String, String}
+    # If it looks like a relative path with a directory component, split it
+    if occursin("/", test_file)
+        parts = splitpath(test_file)
+        if length(parts) >= 2
+            # Check if first component is an existing dir in pkgdir
+            candidate_dir = joinpath(pkgdir, parts[1])
+            if isdir(candidate_dir)
+                return (parts[1], join(parts[2:end], "/"))
+            end
+        end
+    end
+    # Default: assume test/ directory
+    return ("test", test_file)
+end
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
+function main(argv::Vector{String})
+    # Parse args
+    args = try
+        _parse_args(argv)
+    catch e
+        if e isa ArgumentError
+            println(stderr, "ERROR: $(e.msg)")
+            _print_usage()
+            exit(2)
+        end
+        rethrow()
+    end
+
+    pkgdir = abspath(args.pkg)
+    if !isdir(pkgdir)
+        println(stderr, "ERROR: --pkg directory does not exist: $(pkgdir)")
+        exit(2)
+    end
+
+    # Discover
+    src_dir = joinpath(pkgdir, "src")
+    if !isdir(src_dir)
+        println(stderr, "ERROR: no src/ directory in $(pkgdir)")
+        exit(2)
+    end
+
+    println(stderr, "[gremlins] Discovering mutations in $(src_dir)...")
+    sites = try
+        Gremlins.discover(src_dir; root=pkgdir)
+    catch e
+        println(stderr, "ERROR: discovery failed: $e")
+        exit(2)
+    end
+
+    # Apply file filter
+    sites = _filter_sites_by_files(sites, args.files)
+    if !isempty(args.files)
+        println(stderr, "[gremlins] After --files filter: $(length(sites)) sites")
+    else
+        println(stderr, "[gremlins] Discovered $(length(sites)) mutation sites")
+    end
+
+    if isempty(sites)
+        println(stderr, "[gremlins] No mutation sites found (check --files filter and src/ contents)")
+        band_line = format_band_line(:weak, NaN, 0, 0)
+        println(band_line)
+        exit(1)
+    end
+
+    # Resolve test file
+    test_dir, test_file_bare = _resolve_test_file(pkgdir, args.test_file)
+
+    # Verify test file exists
+    test_path = joinpath(pkgdir, test_dir, test_file_bare)
+    if !isfile(test_path)
+        println(stderr, "ERROR: test file not found: $(test_path)")
+        exit(2)
+    end
+
+    # Baseline
+    println(stderr, "[gremlins] Running baseline test suite ($(test_dir)/$(test_file_bare))...")
+    baseline_elapsed, cmap = try
+        Gremlins.baseline_run(pkgdir; test_dir=test_dir, test_file=test_file_bare)
+    catch e
+        println(stderr, "ERROR: baseline run failed: $e")
+        exit(2)
+    end
+    println(stderr, "[gremlins] Baseline: $(round(baseline_elapsed, digits=2))s")
+
+    # Run mutations
+    run_result = if args.warm
+        println(stderr, "[gremlins] Running warm-pool mutation run...")
+        warm_result = try
+            cache = Gremlins.load_cache(pkgdir)
+            wr = Gremlins.run_mutations_warm(pkgdir, sites, cmap;
+                test_dir=test_dir,
+                test_file=test_file_bare,
+                baseline_elapsed=baseline_elapsed,
+                verbose=false,
+                cache=cache)
+            Gremlins.save_cache(cache)
+            wr
+        catch e
+            println(stderr, "ERROR: warm run failed: $e")
+            exit(2)
+        end
+        Gremlins.print_warm_summary(warm_result)
+        # Report I4 mismatches
+        if !isempty(warm_result.i4_mismatches)
+            println(stderr, "WARNING: I4 warm/cold mismatches detected:")
+            for m in warm_result.i4_mismatches
+                println(stderr, "  $m")
+            end
+        end
+        warm_result.run
+    else
+        println(stderr, "[gremlins] Running cold mutation run...")
+        try
+            Gremlins.run_mutations(pkgdir, sites, cmap;
+                test_dir=test_dir,
+                test_file=test_file_bare,
+                baseline_elapsed=baseline_elapsed,
+                verbose=false)
+        catch e
+            println(stderr, "ERROR: cold run failed: $e")
+            exit(2)
+        end
+    end
+
+    Gremlins.print_summary(run_result)
+
+    # Write JSON report if requested
+    if !isnothing(args.json_out)
+        try
+            json_str = Gremlins.report_json(run_result)
+            open(args.json_out, "w") do io
+                write(io, json_str)
+            end
+            println(stderr, "[gremlins] JSON report written to $(args.json_out)")
+        catch e
+            println(stderr, "WARNING: failed to write JSON report: $e")
+        end
+    end
+
+    # Compute band
+    score = Gremlins.mutation_score(run_result)
+    n_killed   = count(r -> r.outcome == Gremlins.killed,     run_result.results)
+    n_nocov    = count(r -> r.outcome == Gremlins.no_coverage, run_result.results)
+    n_err      = count(r -> r.outcome == Gremlins.error,       run_result.results)
+    n_eligible = length(run_result.results) - n_nocov - n_err
+
+    band = classify_band(score, args.strong_threshold, args.acceptable_threshold)
+    band_line = format_band_line(band, score, n_killed, n_eligible)
+    println(band_line)
+
+    exit(band_exit_code(band))
+end
+
+main(ARGS)
