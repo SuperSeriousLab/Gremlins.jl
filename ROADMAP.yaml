@@ -67,12 +67,18 @@ phases:
         # Tests: 389 pass (M0=232, M1=47, M2=110)
   - id: m3
     name: "M3 Release: docs, ANN, registration, JuliaTesting pitch"
-    status: not-started
+    status: in-progress
     depends_on: [m2]
     items:
       - name: "Docs + CI GitHub Action recipe"
-        done: false
+        done: true
+        # 2026-06-05: README.md, docs/usage.md, .github/workflows/mutation.yml.example,
+        # docs/release-checklist.md, docs/drafts/ (ann + pitch). Commit 303bdab.
       - name: "General registry registration"
         done: false
       - name: "EDD GATE: Sisyphus T4 julia.toml wired, one eidos Julia repo passes T4 via this tool"
         done: false
+        # Status: T4 wired in JUI .sisyphus/scripts/certify_t4_mutation.sh (commit 8682e3d).
+        # Bugs fixed 2026-06-05: (1) no-sites PASS→FAIL, (2) literal \t→real tabs,
+        # (3) --files relpath normalization (strip ./, backslash→slash).
+        # EDD gate re-run in progress: style.jl, auth.jl, token.jl (--max-sites 40, ~10min/chunk).

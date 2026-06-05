@@ -22,6 +22,7 @@ struct ParsedArgs_t
     json_out::Union{String, Nothing}
     strong_threshold::Float64
     acceptable_threshold::Float64
+    max_sites::Int
 end
 
 function _parse_args_t(argv::Vector{String})::ParsedArgs_t
@@ -32,6 +33,7 @@ function _parse_args_t(argv::Vector{String})::ParsedArgs_t
     json_out = nothing
     strong = 0.80
     acceptable = 0.60
+    max_sites = 0
     i = 1
     while i <= length(argv)
         arg = argv[i]
@@ -59,6 +61,11 @@ function _parse_args_t(argv::Vector{String})::ParsedArgs_t
             v = tryparse(Float64, argv[i])
             (v === nothing || v < 0 || v > 1) && throw(ArgumentError("--acceptable must be a float in [0,1]"))
             acceptable = v
+        elseif arg == "--max-sites"
+            i += 1; i > length(argv) && throw(ArgumentError("--max-sites requires a value"))
+            v = tryparse(Int, argv[i])
+            (v === nothing || v < 0) && throw(ArgumentError("--max-sites must be a non-negative integer"))
+            max_sites = v
         else
             throw(ArgumentError("unknown argument: $(repr(arg))"))
         end
@@ -66,7 +73,7 @@ function _parse_args_t(argv::Vector{String})::ParsedArgs_t
     end
     isempty(pkg) && throw(ArgumentError("--pkg is required"))
     acceptable > strong && throw(ArgumentError("--acceptable must be <= --strong"))
-    ParsedArgs_t(pkg, files, test_file, warm, json_out, strong, acceptable)
+    ParsedArgs_t(pkg, files, test_file, warm, json_out, strong, acceptable, max_sites)
 end
 
 function classify_band_t(kill_rate::Float64, strong::Float64, acceptable::Float64)::Symbol
@@ -85,11 +92,23 @@ function format_band_line_t(band::Symbol, kill_rate::Float64, killed::Int, n::In
     "BAND\t$(band)\tkill_rate=$(kr)\tkilled=$(killed)/$(n)"
 end
 
+function _normalize_pat_t(pat::String)::String
+    p = replace(pat, '\\' => '/')
+    while startswith(p, "./")
+        p = p[3:end]
+    end
+    return p
+end
+
 function _filter_sites_by_files_t(relpaths::Vector{String}, patterns::Vector{String})::Vector{String}
     isempty(patterns) && return relpaths
     filter(relpaths) do rp
-        any(patterns) do pat
-            endswith(rp, pat) || endswith(rp, basename(pat))
+        any(patterns) do raw_pat
+            pat = _normalize_pat_t(raw_pat)
+            rp == pat && return true
+            endswith(rp, "/" * pat) && return true
+            bn = basename(pat)
+            endswith(rp, "/" * bn) || rp == bn
         end
     end
 end
@@ -107,6 +126,7 @@ end
         @test a.json_out === nothing
         @test a.strong_threshold == 0.80
         @test a.acceptable_threshold == 0.60
+        @test a.max_sites == 0
     end
 
     @testset "--warm flag" begin
@@ -163,6 +183,29 @@ end
 
     @testset "error: --strong not a float" begin
         @test_throws ArgumentError _parse_args_t(["--pkg", "/p", "--strong", "notanumber"])
+    end
+
+    @testset "--max-sites default is 0" begin
+        a = _parse_args_t(["--pkg", "/p"])
+        @test a.max_sites == 0
+    end
+
+    @testset "--max-sites parses positive int" begin
+        a = _parse_args_t(["--pkg", "/p", "--max-sites", "40"])
+        @test a.max_sites == 40
+    end
+
+    @testset "--max-sites zero is valid (no cap)" begin
+        a = _parse_args_t(["--pkg", "/p", "--max-sites", "0"])
+        @test a.max_sites == 0
+    end
+
+    @testset "error: --max-sites negative" begin
+        @test_throws ArgumentError _parse_args_t(["--pkg", "/p", "--max-sites", "-1"])
+    end
+
+    @testset "error: --max-sites not an int" begin
+        @test_throws ArgumentError _parse_args_t(["--pkg", "/p", "--max-sites", "forty"])
     end
 
 end
@@ -222,6 +265,35 @@ end
     @test occursin("0.6543", line3)
 end
 
+@testset "CLI — path normalization" begin
+
+    @testset "no-op for clean path" begin
+        @test _normalize_pat_t("src/foo.jl") == "src/foo.jl"
+    end
+
+    @testset "strip single ./" begin
+        @test _normalize_pat_t("./src/foo.jl") == "src/foo.jl"
+    end
+
+    @testset "strip double ./" begin
+        @test _normalize_pat_t("././src/foo.jl") == "src/foo.jl"
+    end
+
+    @testset "bare filename unchanged" begin
+        @test _normalize_pat_t("foo.jl") == "foo.jl"
+    end
+
+    @testset "backslash to forward slash" begin
+        @test _normalize_pat_t("src\\auth\\auth.jl") == "src/auth/auth.jl"
+    end
+
+    @testset "mixed slashes with dotslash" begin
+        # ".\\src\\foo.jl" → "./src/foo.jl" (backslash→slash) → "src/foo.jl" (strip ./)
+        @test _normalize_pat_t(".\\src\\foo.jl") == "src/foo.jl"
+    end
+
+end
+
 @testset "CLI — file filter" begin
     relpaths = ["src/foo.jl", "src/bar.jl", "src/utils/baz.jl"]
 
@@ -254,5 +326,32 @@ end
         # --files src/foo.jl → basename is "foo.jl" which matches
         result = _filter_sites_by_files_t(relpaths, ["src/foo.jl"])
         @test result == ["src/foo.jl"]
+    end
+
+    @testset "dotslash prefix stripped — nested path" begin
+        # T4 might pass "./src/foo.jl"; should match "src/foo.jl"
+        result = _filter_sites_by_files_t(relpaths, ["./src/foo.jl"])
+        @test result == ["src/foo.jl"]
+    end
+
+    @testset "dotslash prefix stripped — bare filename" begin
+        result = _filter_sites_by_files_t(relpaths, ["./foo.jl"])
+        @test result == ["src/foo.jl"]
+    end
+
+    @testset "nested sub-path filter — utils/baz.jl matches src/utils/baz.jl" begin
+        result = _filter_sites_by_files_t(relpaths, ["utils/baz.jl"])
+        @test result == ["src/utils/baz.jl"]
+    end
+
+    @testset "double dotslash stripped" begin
+        result = _filter_sites_by_files_t(relpaths, ["././src/bar.jl"])
+        @test result == ["src/bar.jl"]
+    end
+
+    @testset "backslash normalized to forward slash" begin
+        # Windows-style path separator — should still match
+        result = _filter_sites_by_files_t(["src/utils/baz.jl"], ["src\\utils\\baz.jl"])
+        @test result == ["src/utils/baz.jl"]
     end
 end

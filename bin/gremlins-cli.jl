@@ -34,6 +34,7 @@ struct ParsedArgs
     json_out::Union{String, Nothing}
     strong_threshold::Float64
     acceptable_threshold::Float64
+    max_sites::Int              # 0 = no cap; >0 = take first N sites (deterministic)
 end
 
 """
@@ -49,6 +50,7 @@ function _parse_args(argv::Vector{String})::ParsedArgs
     json_out = nothing
     strong = 0.80
     acceptable = 0.60
+    max_sites = 0
 
     i = 1
     while i <= length(argv)
@@ -84,6 +86,12 @@ function _parse_args(argv::Vector{String})::ParsedArgs
             v = tryparse(Float64, argv[i])
             (v === nothing || v < 0 || v > 1) && throw(ArgumentError("--acceptable must be a float in [0,1]"))
             acceptable = v
+        elseif arg == "--max-sites"
+            i += 1
+            i > length(argv) && throw(ArgumentError("--max-sites requires a value"))
+            v = tryparse(Int, argv[i])
+            (v === nothing || v < 0) && throw(ArgumentError("--max-sites must be a non-negative integer"))
+            max_sites = v
         elseif arg == "--help" || arg == "-h"
             _print_usage()
             exit(0)
@@ -96,7 +104,7 @@ function _parse_args(argv::Vector{String})::ParsedArgs
     isempty(pkg) && throw(ArgumentError("--pkg is required"))
     acceptable > strong && throw(ArgumentError("--acceptable must be <= --strong"))
 
-    return ParsedArgs(pkg, files, test_file, warm, json_out, strong, acceptable)
+    return ParsedArgs(pkg, files, test_file, warm, json_out, strong, acceptable, max_sites)
 end
 
 function _print_usage()
@@ -118,6 +126,10 @@ Options:
   --json <out.json>    Write JSON report to this file
   --strong <float>     Kill-rate threshold for "strong" band (default: 0.80)
   --acceptable <float> Kill-rate threshold for "acceptable" band (default: 0.60)
+  --max-sites <int>    Cap eligible mutation sites to first N (deterministic order).
+                       0 = no cap (default). Use to bound per-chunk CI run time
+                       (e.g. --max-sites 40 keeps T4 under ~10 min on JUI).
+                       Capped runs are noted in the band output line.
   --help               Print this message
 
 Band output (always printed to stdout):
@@ -175,18 +187,52 @@ end
 # ─── File filter ──────────────────────────────────────────────────────────────
 
 """
+    _normalize_pat(pat::String) -> String
+
+Normalize a --files pattern for robust path matching:
+- Replace backslashes with forward slashes (Windows-safe)
+- Strip leading "./" (e.g. "./src/foo.jl" → "src/foo.jl")
+
+This ensures patterns like "./src/style.jl", "src/style.jl", or "style.jl"
+all match a site with relpath "src/style.jl".
+"""
+function _normalize_pat(pat::String)::String
+    p = replace(pat, '\\' => '/')
+    while startswith(p, "./")
+        p = p[3:end]
+    end
+    return p
+end
+
+"""
     _filter_sites_by_files(sites, file_patterns) -> Vector
 
-Keep only sites whose relpath basename or relpath suffix matches any of the
-given patterns. Patterns are basenames or relative paths from --files.
+Keep only sites whose relpath matches any of the given patterns.
+Matching rules (applied after normalizing the pattern with _normalize_pat):
+1. Exact match: relpath == normalized_pat
+2. Suffix match: endswith(relpath, "/" * normalized_pat) — nested path match
+3. Basename match: endswith(relpath, "/" * basename(normalized_pat)) — bare filename
+
+All comparisons use forward slashes. Patterns are basenames or relative paths
+passed via --files (e.g. "style.jl", "src/style.jl", "./src/style.jl").
 Empty patterns = no filter (all sites).
 """
 function _filter_sites_by_files(sites, file_patterns::Vector{String})
     isempty(file_patterns) && return sites
     return filter(sites) do site
-        any(file_patterns) do pat
-            # Match if relpath ends with pat or basename matches basename of pat
-            endswith(site.relpath, pat) || endswith(site.relpath, basename(pat))
+        rp = site.relpath
+        any(file_patterns) do raw_pat
+            pat = _normalize_pat(raw_pat)
+            # Exact match (e.g. relpath IS the full relative path)
+            rp == pat && return true
+            # Suffix match: relpath ends with /<pat>
+            # This handles "src/style.jl" matching when discover produces "src/style.jl"
+            # AND handles nested paths like "auth/auth.jl" matching "src/auth/auth.jl"
+            endswith(rp, "/" * pat) && return true
+            # Basename match: relpath ends with /<basename(pat)>
+            # This handles bare filenames like "style.jl" → "src/style.jl"
+            bn = basename(pat)
+            endswith(rp, "/" * bn) || rp == bn
         end
     end
 end
@@ -261,6 +307,14 @@ function main(argv::Vector{String})
         println(stderr, "[gremlins] After --files filter: $(length(sites)) sites")
     else
         println(stderr, "[gremlins] Discovered $(length(sites)) mutation sites")
+    end
+
+    # Apply --max-sites cap (deterministic: sites are already sorted by discover())
+    capped = false
+    if args.max_sites > 0 && length(sites) > args.max_sites
+        println(stderr, "[gremlins] Capping to first $(args.max_sites) sites (--max-sites; total=$(length(sites)))")
+        sites = sites[1:args.max_sites]
+        capped = true
     end
 
     if isempty(sites)
@@ -354,6 +408,9 @@ function main(argv::Vector{String})
 
     band = classify_band(score, args.strong_threshold, args.acceptable_threshold)
     band_line = format_band_line(band, score, n_killed, n_eligible)
+    if capped
+        band_line = band_line * "\tcapped=first-$(args.max_sites)"
+    end
     println(band_line)
 
     exit(band_exit_code(band))
