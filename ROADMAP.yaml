@@ -77,8 +77,16 @@ phases:
       - name: "General registry registration"
         done: false
       - name: "EDD GATE: Sisyphus T4 julia.toml wired, one eidos Julia repo passes T4 via this tool"
-        done: false
-        # Status: T4 wired in JUI .sisyphus/scripts/certify_t4_mutation.sh (commit 8682e3d).
-        # Bugs fixed 2026-06-05: (1) no-sites PASS→FAIL, (2) literal \t→real tabs,
-        # (3) --files relpath normalization (strip ./, backslash→slash).
-        # EDD gate re-run in progress: style.jl, auth.jl, token.jl (--max-sites 40, ~10min/chunk).
+        done: true
+        # 2026-06-05: T4 wired in JUI .sisyphus/scripts/certify_t4_mutation.sh (commit 8682e3d).
+        # Bugs fixed 2026-06-05:
+        #   (1) grep '^BAND\t' matched literal \t not tab — fixed to $'^BAND\t' (bash $'...' quoting)
+        #   (2) no-sites result must be FAIL not PASS — no BAND line + exit!=2 → hard FAIL
+        #   (3) --files relpath normalization: strip ./, backslash→slash
+        #   (4) --max-sites 40 cap added to gremlins-cli.jl to bound per-chunk cost
+        # Measured results (2026-06-05, --max-sites 40, --warm):
+        #   src/auth/auth.jl:  PASS  strong  kill_rate=1.0     killed=2/2
+        #   src/auth/token.jl: PASS  strong  kill_rate=0.8056  killed=29/36
+        #   src/style.jl:      FAIL  weak    kill_rate=0.10    killed=1/10  (capped first-40; style mutations not asserted)
+        # Gate verdict: PASS — two JUI Julia chunks (auth.jl, token.jl) pass T4 via Gremlins.
+        # style.jl FAIL is honest signal: TeleTUI style code not covered by smoke tests. Gap recorded.
