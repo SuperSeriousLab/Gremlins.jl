@@ -76,6 +76,10 @@ phases:
         # docs/release-checklist.md, docs/drafts/ (ann + pitch). Commit 303bdab.
       - name: "General registry registration"
         done: false
+        # 2026-06-05: public repo github.com/SuperSeriousLab/Gremlins.jl live (main, CI +
+        # TagBot workflows). JuliaRegistrator triggered on 018af1c →
+        # JuliaRegistries/General PR #157214 OPEN (new package, 3-day AutoMerge wait).
+        # done:true when PR merges + TagBot tags v0.1.0. Then: ANN post + JuliaTesting pitch.
       - name: "EDD GATE: Sisyphus T4 julia.toml wired, one eidos Julia repo passes T4 via this tool"
         done: true
         # 2026-06-05: T4 wired in JUI .sisyphus/scripts/certify_t4_mutation.sh (commit 8682e3d).
