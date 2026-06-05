@@ -2,7 +2,7 @@ module Gremlins
 
 using JuliaSyntax
 using SHA
-using Distributed
+using Base64
 
 include("operators.jl")
 include("discover.jl")
