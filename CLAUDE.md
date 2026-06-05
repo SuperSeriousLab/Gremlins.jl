@@ -6,7 +6,7 @@ Julia mutation-testing package: JuliaSyntax-based AST mutation operators,
 coverage-guided test selection, warm-worker execution, survival reports.
 Fills the dead-Vimes community gap AND the Sisyphus T4 (mutation tier) row
 for Julia projects (JUI, Igor, WIQ, MEROM). OSS-destined (General registry,
-JuliaTesting org pitch at M3). Design: /home/js/eidos/docs/design-julia-mutation-testing.md
+JuliaTesting org pitch at M3). Design: docs/DESIGN.md (moved from eidos docs/ 2026-06-05)
 
 ## Build & Test
 
