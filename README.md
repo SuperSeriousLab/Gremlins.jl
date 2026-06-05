@@ -77,22 +77,31 @@ BAND	weak	kill_rate=0.28	killed=7/25
    a line-to-testfile map. Mutants on uncovered lines are marked `no_coverage`
    (a finding, not a kill).
 
-3. **Warm-worker eval** — a persistent Julia worker process loads your package once
+3. **Shadow-copy crash safety** — before any mutant is applied, Gremlins creates a
+   disposable shadow copy of your package under `mktempdir()`. All mutations and test
+   subprocesses run against the shadow; your real source tree is never written. This
+   means a SIGKILL or OOM event leaves an orphaned `/tmp` directory (harmless) rather
+   than corrupted source files. In-process `try/finally` restore is *not* crash-safe —
+   SIGKILL bypasses finally. The shadow design eliminates the correctness risk entirely.
+
+4. **Warm-worker eval** — a persistent Julia worker process loads your package once
    (paying startup cost once, not per-mutant). For each mutant, the worker evals
    only the changed top-level expression into the package module via `Core.eval`,
    runs the tests in a fresh `Module`, then restores the original. Disk is never
-   written on the warm path.
+   written on the warm path (shadow applies to cold paths only).
 
-4. **Fallback taxonomy** — mutations inside macro definitions, type/struct defs,
+5. **Fallback taxonomy** — mutations inside macro definitions, type/struct defs,
    or `const` globals cannot safely be eval'd; these route to the cold path
-   (subprocess per mutant). The report shows the fallback breakdown.
+   (subprocess per mutant, run in shadow). The report shows the fallback breakdown.
 
-5. **Incremental cache** — results are keyed on `SHA256(source_content) + mutant_id
+6. **Incremental cache** — results are keyed on `SHA256(source_content) + mutant_id
    + gremlins_version`. No mtime (git checkout refreshes mtimes on untouched files).
+   Cache is read/written against the real source tree — unchanged since shadow is
+   byte-identical.
 
-6. **I4 agreement** — after the run, a random sample of warm-executed mutants is
-   re-run cold to verify that warm eval produces the same outcome as a fresh
-   subprocess. Any mismatch is a hard error in the report.
+7. **I4 agreement** — after the run, a random sample of warm-executed mutants is
+   re-run cold (in shadow) to verify that warm eval produces the same outcome as a
+   fresh subprocess. Any mismatch is a hard error in the report.
 
 ## Operator table
 

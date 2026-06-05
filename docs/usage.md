@@ -143,10 +143,30 @@ All `(relpath, line)` pairs that have coverage.
 
 ## Cold runner (M1)
 
+### Shadow-copy crash safety
+
+Before running any mutants, Gremlins creates a disposable shadow copy of your
+package under `mktempdir()`. All mutations are applied inside the shadow; your
+real source tree is **never written**. If the runner process is killed (SIGKILL,
+OOM) mid-mutant, the shadow directory may be left in `/tmp` as harmless garbage —
+your source code is untouched.
+
+`try/finally` restore (the previous design) is not crash-safe: SIGKILL bypasses
+`finally` blocks. The shadow design eliminates the correctness risk entirely. A
+leaked shadow tmpdir is noise; a corrupted real source tree is a correctness failure.
+
+The cache (`.gremlins_cache.json`) is read and written against the real package
+directory. Content hashes are computed from real source files, which are
+byte-identical to shadow files.
+
+If Pkg resolution fails in the shadow (e.g. your `Manifest.toml` contains relative
+path references), `baseline_run` throws a typed `MutationError` with a diagnostic
+message. There is no silent fallback to the real tree.
+
 ### `run_mutations(pkgdir, sites, cmap; ...) -> RunResult`
 
-Process-per-mutant runner. For each site: check coverage, apply mutation, run tests,
-revert. Source is always restored (try/finally).
+Process-per-mutant runner. For each site: check coverage, apply mutation to shadow,
+run tests against shadow, restore shadow (hygiene).
 
 **kwargs:**
 - `test_dir="test"` — subdirectory containing test files

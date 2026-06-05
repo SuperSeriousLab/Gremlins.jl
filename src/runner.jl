@@ -6,8 +6,10 @@
 #   run_mutations(pkgdir, sites, cmap; ...) -> RunResult
 #
 # Invariants:
-#   I1  — Source is ALWAYS restored: apply!/revert! wrapped in try/finally.
-#          A crashed run must never leave mutated source on disk.
+#   I1  — The REAL package tree is NEVER written by mutation runs.
+#          All mutation execution happens in a disposable shadow copy under mktempdir.
+#          A SIGKILL/OOM event leaves orphaned tmp dirs — harmless — NOT corrupted source.
+#          Production incident 2026-06-04: in-process try/finally is not crash-safe.
 #   I2  — Deterministic: mutants processed in sorted order (id).
 #   I3  — Timeout = 3× baseline elapsed (configurable).
 
@@ -97,13 +99,18 @@ end
 
 For each `MutationSite` in `sites` (processed in sorted id order):
 1. Check coverage — skip to `:no_coverage` if site's line not covered.
-2. Apply the mutation to the source file.
-3. Run the test suite as a subprocess.
+2. Apply the mutation to the SHADOW file (real tree never touched — I1).
+3. Run the test suite as a subprocess with `--project=<shadow>`.
 4. Classify outcome.
-5. ALWAYS revert the source (try/finally).
+5. Revert the shadow file (hygiene — keeps shadow valid for the next mutant).
+   This revert is NOT the safety mechanism; it is cheap in-shadow restoration.
+   The safety property is that the real tree was never written, so SIGKILL cannot
+   corrupt it. A leaked shadow tmpdir is harmless garbage in /tmp.
 
 `baseline_elapsed`: if provided, timeout = baseline_elapsed × timeout_multiplier.
 If not provided, a new baseline run is performed.
+
+Shadow is created ONCE per run (not per mutant) and cleaned up in finally.
 """
 function run_mutations(
     pkgdir::AbstractString,
@@ -131,68 +138,85 @@ function run_mutations(
     # Sort sites deterministically by id
     sorted_sites = sort(sites, by = s -> s.id)
 
-    test_path = joinpath(pkgdir, test_dir, test_file)
     jl = _julia_exe()
-
     results = MutantResult[]
     run_t0 = time()
 
-    for (i, site) in enumerate(sorted_sites)
-        # 1. Coverage check
-        if !is_covered(cmap, site)
-            verbose && println("[gremlins] [$i/$(length(sorted_sites))] $(site.id[1:8])… no_coverage")
-            push!(results, MutantResult(site, no_coverage, 0.0, ""))
-            continue
-        end
+    # Create shadow copy ONCE — real tree is NEVER written (I1 crash-safety)
+    # If SIGKILL hits us, the shadow tmpdir is left in /tmp as harmless garbage.
+    shadow = _make_shadow(pkgdir)
+    verbose && println("[gremlins] Shadow copy at: $shadow")
 
-        verbose && print("[gremlins] [$i/$(length(sorted_sites))] $(site.id[1:8])… ")
+    try
+        shadow_test_path = joinpath(shadow, test_dir, test_file)
 
-        # 2. Determine the full path to mutate
-        abs_path = _site_abs_path(pkgdir, site)
-
-        mutant_t0 = time()
-        outcome   = survived   # default: assume survived
-        err_msg   = ""
-
-        original_src = try
-            read(abs_path, String)
-        catch e
-            push!(results, MutantResult(site, error, 0.0, "cannot read source: $e"))
-            verbose && println("error (read)")
-            continue
-        end
-
-        # 3. Apply mutation + run + revert (I1: ALWAYS revert)
-        try
-            apply!(site, abs_path)
-
-            # 4. Run test subprocess
-            cmd = Cmd([jl, "--project=$pkgdir", test_path])
-            exit_code, _ = _run_with_timeout(cmd, mutant_timeout)
-
-            if exit_code == :timeout
-                outcome = timeout
-            elseif exit_code != 0
-                outcome = killed
-            else
-                outcome = survived
+        for (i, site) in enumerate(sorted_sites)
+            # 1. Coverage check
+            if !is_covered(cmap, site)
+                verbose && println("[gremlins] [$i/$(length(sorted_sites))] $(site.id[1:8])… no_coverage")
+                push!(results, MutantResult(site, no_coverage, 0.0, ""))
+                continue
             end
-        catch e
-            outcome = error
-            err_msg = sprint(showerror, e)
-        finally
-            # 5. ALWAYS restore original — crashes must not leave mutated source
+
+            verbose && print("[gremlins] [$i/$(length(sorted_sites))] $(site.id[1:8])… ")
+
+            # 2. Determine shadow path (real path is never touched)
+            real_abs_path = _site_abs_path(pkgdir, site)
+            shadow_abs_path = try
+                _shadow_abs_path(pkgdir, shadow, real_abs_path)
+            catch e
+                push!(results, MutantResult(site, error, 0.0, "shadow path error: $e"))
+                verbose && println("error (shadow path)")
+                continue
+            end
+
+            mutant_t0 = time()
+            outcome   = survived
+            err_msg   = ""
+
+            shadow_original_src = try
+                read(shadow_abs_path, String)
+            catch e
+                push!(results, MutantResult(site, error, 0.0, "cannot read shadow source: $e"))
+                verbose && println("error (read shadow)")
+                continue
+            end
+
+            # 3. Apply mutation to shadow + run + revert shadow (hygiene, not safety)
             try
-                _atomic_write(abs_path, original_src)
-            catch restore_err
-                # If restore fails, this is critical — surface it loudly
-                @error "CRITICAL: failed to restore source after mutation" path=abs_path err=restore_err
-            end
-        end
+                apply!(site, shadow_abs_path)
 
-        elapsed = time() - mutant_t0
-        push!(results, MutantResult(site, outcome, elapsed, err_msg))
-        verbose && println(string(outcome), " ($(round(elapsed, digits=2))s)")
+                # 4. Run test subprocess against shadow project
+                cmd = Cmd([jl, "--project=$shadow", shadow_test_path])
+                exit_code, _ = _run_with_timeout(cmd, mutant_timeout)
+
+                if exit_code == :timeout
+                    outcome = timeout
+                elseif exit_code != 0
+                    outcome = killed
+                else
+                    outcome = survived
+                end
+            catch e
+                outcome = error
+                err_msg = sprint(showerror, e)
+            finally
+                # In-shadow restoration (hygiene: keeps shadow valid for next mutant)
+                # This is NOT the crash-safety mechanism — real tree was never touched.
+                try
+                    _atomic_write(shadow_abs_path, shadow_original_src)
+                catch restore_err
+                    @warn "[gremlins] Failed to restore shadow source (harmless — shadow will be cleaned up)" path=shadow_abs_path err=restore_err
+                end
+            end
+
+            elapsed = time() - mutant_t0
+            push!(results, MutantResult(site, outcome, elapsed, err_msg))
+            verbose && println(string(outcome), " ($(round(elapsed, digits=2))s)")
+        end
+    finally
+        # Clean up shadow — a SIGKILL skip of this cleanup leaves harmless tmp garbage
+        rm(shadow; recursive=true, force=true)
     end
 
     total_elapsed = time() - run_t0

@@ -126,38 +126,117 @@ end
               result.results)
 end
 
-# ─── Crash-safety (I1): source restored after simulated runner error ──────────
-@testset "Runner — crash-safety: source restored after error" begin
-    mktempdir() do tmp
-        # Copy fixture src file to tmp
-        src_path = joinpath(FIXTURE_DIR, "src", "MiniTarget.jl")
-        dst_path = joinpath(tmp, "MiniTarget.jl")
-        cp(src_path, dst_path)
+# ─── Crash-safety (I1): shadow semantics — real tree never written ────────────
+@testset "Runner — crash-safety: real tree unmodified (shadow semantics)" begin
+    # I1 shadow semantics: run_mutations must not modify the real package tree.
+    # We verify this by hashing every file before and after a real run.
+    mktempdir() do pkg_copy
+        # Set up a complete standalone copy of MiniTarget fixture
+        cp(FIXTURE_DIR, pkg_copy; force=true)
 
-        original_bytes = read(dst_path)
+        # Hash all source files before the run
+        src_file = joinpath(pkg_copy, "src", "MiniTarget.jl")
+        before_bytes = read(src_file)
 
-        # Discover a mutation site in the copy
-        sites = discover_file(dst_path; root=tmp, operators=[OP_PLUS_TO_MINUS])
+        # Run a real mutation run (applies mutations in shadow, not in pkg_copy)
+        sites = discover(joinpath(pkg_copy, "src"); operators=[OP_PLUS_TO_MINUS], root=pkg_copy)
         @test !isempty(sites)
-        site = sites[1]
+        elapsed_b, cmap = baseline_run(pkg_copy; test_dir="test", test_file="runtests.jl")
+        run_mutations(pkg_copy, sites, cmap;
+            test_dir="test", test_file="runtests.jl",
+            baseline_elapsed=elapsed_b, verbose=false)
 
-        # Apply the mutation
-        orig_src = apply!(site, dst_path)
+        # Real tree must be byte-identical (shadow protected it)
+        after_bytes = read(src_file)
+        @test after_bytes == before_bytes
+    end
+end
 
-        # Verify it's mutated
-        @test read(dst_path) != original_bytes
+# ─── Crash-safety (I1): SIGKILL crash test — the falsifiability gate ──────────
+# This test reproduces the 2026-06-04 production incident:
+#   - Start run_mutations as a subprocess on a fixture package copy
+#   - SIGKILL it while it is mid-mutant (after baseline finishes, during mutant subprocess)
+#   - Assert the fixture's real tree is byte-identical to before
+#
+# PRE-FIX (without shadow): after SIGKILL, real tree would be left mutated.
+#   Confirmed manually 2026-06-05: apply! to real file + sleep(60) + SIGKILL
+#   → real file left with mutated content.
+# POST-FIX (with shadow):   after SIGKILL, real tree is untouched (mutation was in shadow).
+#   Confirmed manually 2026-06-05: run_mutations with shadow + SIGKILL → real file intact.
+@testset "Runner — SIGKILL crash-safety: real tree intact after kill (I1 falsifiability)" begin
+    mktempdir() do pkg_copy
+        # Set up a complete standalone copy of MiniTarget
+        cp(FIXTURE_DIR, pkg_copy; force=true)
 
-        # Simulate a crash during runner — always restore via try/finally
-        try
-            Base.error("simulated crash during test subprocess")
-        catch
-        finally
-            revert!(site, orig_src, dst_path)
+        # Record the real source file before
+        src_file = joinpath(pkg_copy, "src", "MiniTarget.jl")
+        before_bytes = read(src_file)
+
+        # Signal file: driver creates this after baseline completes, just before first mutant.
+        # Using a file (not stdout) avoids pipe buffering race conditions.
+        signal_file = tempname() * "_gremlins_baseline_done.txt"
+        driver_script = tempname() * "_gremlins_crash_driver.jl"
+
+        # Use the Gremlins project from the actual installation
+        gremlins_project = dirname(dirname(Base.find_package("Gremlins")))
+        write(driver_script, """
+            using Gremlins
+            const PKG_COPY = $(repr(pkg_copy))
+            const SIGNAL_FILE = $(repr(signal_file))
+            sites = discover(joinpath(PKG_COPY, "src"); operators=[OP_PLUS_TO_MINUS], root=PKG_COPY)
+            elapsed_b, cmap = baseline_run(PKG_COPY; test_dir="test", test_file="runtests.jl")
+            # Signal via file: baseline done, about to enter first mutant subprocess
+            write(SIGNAL_FILE, "baseline_done")
+            run_mutations(PKG_COPY, sites, cmap;
+                test_dir="test", test_file="runtests.jl",
+                baseline_elapsed=elapsed_b, verbose=false)
+        """)
+
+        jl = Base.julia_cmd().exec[1]
+        cmd = Cmd([jl, "--project=$gremlins_project", driver_script])
+        proc = run(pipeline(cmd, stdout=devnull, stderr=devnull); wait=false)
+
+        # Wait for BASELINE_DONE signal (driver is now entering first mutant subprocess)
+        deadline = time() + 300.0  # up to 5 min (conservative — baseline ~15s)
+        while time() < deadline && !isfile(signal_file)
+            process_running(proc) || break
+            sleep(0.3)
+        end
+        baseline_done = isfile(signal_file)
+
+        if !baseline_done && !process_running(proc)
+            # Driver finished before we could signal-and-kill (very fast machine or
+            # single mutant completed quickly). Check tree is intact and pass.
+            after_bytes = read(src_file)
+            @test after_bytes == before_bytes
+            rm(driver_script; force=true)
+            rm(signal_file; force=true)
+            return
         end
 
-        # Verify restoration: byte-identical
-        restored = read(dst_path)
-        @test restored == original_bytes
+        # Sleep 2s to be inside the mutant test subprocess (which takes ~20s)
+        sleep(2.0)
+
+        # SIGKILL the driver — this bypasses finally blocks
+        if process_running(proc)
+            kill(proc, Base.SIGKILL)
+            sleep(0.5)
+            try; wait(proc); catch; end
+        end
+
+        # Assert: real source tree is byte-identical to before SIGKILL
+        # Shadow design: mutation was applied inside /tmp shadow, not in pkg_copy.
+        # SIGKILL leaves an orphaned shadow tmpdir (harmless), NOT corrupted source.
+        after_bytes = read(src_file)
+        if after_bytes != before_bytes
+            @error "SIGKILL crash test FAILED: real tree was MUTATED — I1 violated"
+            # Restore to prevent test suite pollution
+            write(src_file, before_bytes)
+        end
+        @test after_bytes == before_bytes   # shadow protected the real tree
+
+        rm(driver_script; force=true)
+        rm(signal_file; force=true)
     end
 end
 

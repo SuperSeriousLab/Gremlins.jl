@@ -609,21 +609,25 @@ Warm-pool mutation runner.
 For each site (sorted by id, respecting I2):
 1. Check cache — if hit, skip execution.
 2. Classify warm eligibility (static, at run time per site).
-3. Ineligible sites → cold path directly (with taxonomy reason).
+3. Ineligible sites → cold path (with taxonomy reason); cold runs in shadow (I1).
 4. Eligible sites → warm path: mutated content shipped to persistent worker.
    Worker evals into module (NO disk write), runs test in fresh Module, restores.
-5. Dynamic fallback on warm error → cold re-run + fallback_evalerr taxonomy.
+5. Dynamic fallback on warm error → cold re-run in shadow + fallback_evalerr taxonomy.
    Worker recycled after each fallback_evalerr.
 6. Worker recycled every WORKER_RECYCLE_INTERVAL mutants (hygiene).
-7. After all mutants: I4 sample check (≥10 warm-run mutants re-run cold).
+7. After all mutants: I4 sample check (≥10 warm-run mutants re-run cold in shadow).
 8. Any I4 mismatch → record in WarmRunResult.i4_mismatches (hard error for caller).
+
+Cold fallbacks use a shadow copy of the package (I1 crash-safety: real tree is
+never written). The warm path already never touches disk. Shadow is created once
+per run and cleaned up in finally.
 
 `pkg_name`: target package name (e.g. "TeleTUI", "MiniTarget"). If not provided,
 inferred from pkgdir/Project.toml. Required for worker startup.
 
 `test_file`: for the warm path, if a file named `<stem>_warm.jl` exists alongside
 `test_file`, it is used instead (warm-compatible variant that uses `using PkgName`
-rather than `include(src)`). The cold path always uses `test_file`.
+rather than `include(src)`). The cold path always uses `test_file` (inside shadow).
 """
 function run_mutations_warm(
     pkgdir::AbstractString,
@@ -660,9 +664,7 @@ function run_mutations_warm(
     sorted_sites = sort(sites, by = s -> s.id)
 
     # Determine warm test file (prefer _warm.jl variant)
-    cold_test_path = joinpath(pkgdir, test_dir, test_file)
     warm_test_path = _find_warm_test_file(pkgdir, test_dir, test_file)
-    verbose && println("[gremlins/warm] Cold test : $cold_test_path")
     verbose && println("[gremlins/warm] Warm test : $warm_test_path")
 
     warm_results   = WarmMutantResult[]
@@ -671,6 +673,11 @@ function run_mutations_warm(
     cache_hits     = 0
     worker_recycles = 0
     run_t0         = time()
+
+    # Create shadow copy ONCE — cold fallbacks run in shadow, real tree never written (I1)
+    shadow = _make_shadow(pkgdir)
+    verbose && println("[gremlins/warm] Shadow copy at: $shadow")
+    shadow_test_path = joinpath(shadow, test_dir, test_file)
 
     # Start worker
     worker = nothing
@@ -683,120 +690,147 @@ function run_mutations_warm(
         end
     end
 
-    for (i, site) in enumerate(sorted_sites)
-        # Coverage check
-        if !is_covered(cmap, site)
-            verbose && println("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… no_coverage")
-            base = MutantResult(site, no_coverage, 0.0, "")
-            wr = WarmMutantResult(base, warm_ok, 0.0, 0.0)
-            push!(warm_results, wr)
-            _tally!(taxonomy, warm_ok)
-            continue
-        end
-
-        # Cache check
-        if !isnothing(cache)
-            abs_path = _find_abs_path_or_throw(pkgdir, site)
-            src_content = try; read(abs_path, String); catch; ""; end
-            cached = cache_get(cache, src_content, site.id)
-            if !isnothing(cached)
-                cache_hits += 1
-                base = MutantResult(site, cached.outcome, cached.elapsed, "")
+    try
+        for (i, site) in enumerate(sorted_sites)
+            # Coverage check
+            if !is_covered(cmap, site)
+                verbose && println("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… no_coverage")
+                base = MutantResult(site, no_coverage, 0.0, "")
                 wr = WarmMutantResult(base, warm_ok, 0.0, 0.0)
                 push!(warm_results, wr)
-                verbose && println("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… cache_hit ($(cached.outcome))")
                 _tally!(taxonomy, warm_ok)
                 continue
             end
-        end
 
-        # Static warm eligibility
-        elig = classify_warm_eligibility(site, pkgdir)
-
-        if !elig.eligible
-            verbose && println("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… cold ($(elig.reason))")
-            cold_t0 = time()
-            cold_outcome, cold_elapsed, cold_err = _run_cold_single(site, pkgdir, cold_test_path, mutant_timeout)
-            base = MutantResult(site, cold_outcome, cold_elapsed, cold_err)
-            wr = WarmMutantResult(base, elig.reason, 0.0, cold_elapsed)
-            push!(warm_results, wr)
-            _tally!(taxonomy, elig.reason)
+            # Cache check (reads real source for content hash — cache stays real-side)
             if !isnothing(cache)
                 abs_path = _find_abs_path_or_throw(pkgdir, site)
                 src_content = try; read(abs_path, String); catch; ""; end
-                cache_put!(cache, src_content, site.id, cold_outcome, cold_elapsed)
-            end
-            continue
-        end
-
-        # Warm path — requires worker
-        abs_path = try
-            _find_abs_path_or_throw(pkgdir, site)
-        catch e
-            base = MutantResult(site, error, 0.0, "cannot locate source: $e")
-            wr = WarmMutantResult(base, fallback_evalerr, 0.0, 0.0)
-            push!(warm_results, wr)
-            _tally!(taxonomy, fallback_evalerr)
-            continue
-        end
-
-        src_content = try
-            read(abs_path, String)
-        catch e
-            base = MutantResult(site, error, 0.0, "cannot read source: $e")
-            wr = WarmMutantResult(base, fallback_evalerr, 0.0, 0.0)
-            push!(warm_results, wr)
-            _tally!(taxonomy, fallback_evalerr)
-            continue
-        end
-
-        mutated_content = try
-            apply(site, src_content)
-        catch e
-            base = MutantResult(site, error, 0.0, "apply failed: $e")
-            wr = WarmMutantResult(base, fallback_evalerr, 0.0, 0.0)
-            push!(warm_results, wr)
-            _tally!(taxonomy, fallback_evalerr)
-            continue
-        end
-
-        # Check worker recycle threshold
-        if !isnothing(worker) && worker.alive &&
-           worker.mutants_served >= WORKER_RECYCLE_INTERVAL
-            verbose && println("[gremlins/warm] Recycling worker at $(worker.mutants_served) mutants")
-            _send_request(worker, "{\"cmd\":\"exit\"}", 5.0)
-            _kill_worker!(worker)
-            worker = _spawn_worker(pkgdir, pkg_name)
-            worker_recycles += 1
-            if isnothing(worker)
-                verbose && println("[gremlins/warm] WARNING: worker re-spawn failed")
-            end
-        end
-
-        # Attempt warm execution
-        ran_warm = false
-        if !isnothing(worker) && worker.alive
-            verbose && print("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… warm ")
-
-            outcome, warm_elapsed, errmsg, fallback_r = _run_mutant_via_worker(
-                worker, abs_path, mutated_content, src_content, site, warm_test_path, mutant_timeout
-            )
-
-            if fallback_r == fallback_evalerr
-                # Dynamic fallback: error in worker → cold re-run
-                verbose && print("→ fallback_evalerr, cold ")
-                # Recycle worker on error (state may be contaminated)
-                if !isnothing(worker) && worker.alive
-                    _send_request(worker, "{\"cmd\":\"exit\"}", 3.0)
-                    _kill_worker!(worker)
-                    worker = _spawn_worker(pkgdir, pkg_name)
-                    worker_recycles += 1
-                    if isnothing(worker)
-                        verbose && println("[gremlins/warm] WARNING: worker re-spawn after fallback failed")
-                    end
+                cached = cache_get(cache, src_content, site.id)
+                if !isnothing(cached)
+                    cache_hits += 1
+                    base = MutantResult(site, cached.outcome, cached.elapsed, "")
+                    wr = WarmMutantResult(base, warm_ok, 0.0, 0.0)
+                    push!(warm_results, wr)
+                    verbose && println("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… cache_hit ($(cached.outcome))")
+                    _tally!(taxonomy, warm_ok)
+                    continue
                 end
-                cold_t0 = time()
-                cold_outcome, cold_elapsed, cold_err = _run_cold_single(site, pkgdir, cold_test_path, mutant_timeout)
+            end
+
+            # Static warm eligibility
+            elig = classify_warm_eligibility(site, pkgdir)
+
+            if !elig.eligible
+                verbose && println("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… cold ($(elig.reason))")
+                cold_outcome, cold_elapsed, cold_err = _run_cold_single(site, pkgdir, shadow, shadow_test_path, mutant_timeout)
+                base = MutantResult(site, cold_outcome, cold_elapsed, cold_err)
+                wr = WarmMutantResult(base, elig.reason, 0.0, cold_elapsed)
+                push!(warm_results, wr)
+                _tally!(taxonomy, elig.reason)
+                if !isnothing(cache)
+                    abs_path = _find_abs_path_or_throw(pkgdir, site)
+                    src_content = try; read(abs_path, String); catch; ""; end
+                    cache_put!(cache, src_content, site.id, cold_outcome, cold_elapsed)
+                end
+                continue
+            end
+
+            # Warm path — requires worker
+            abs_path = try
+                _find_abs_path_or_throw(pkgdir, site)
+            catch e
+                base = MutantResult(site, error, 0.0, "cannot locate source: $e")
+                wr = WarmMutantResult(base, fallback_evalerr, 0.0, 0.0)
+                push!(warm_results, wr)
+                _tally!(taxonomy, fallback_evalerr)
+                continue
+            end
+
+            src_content = try
+                read(abs_path, String)
+            catch e
+                base = MutantResult(site, error, 0.0, "cannot read source: $e")
+                wr = WarmMutantResult(base, fallback_evalerr, 0.0, 0.0)
+                push!(warm_results, wr)
+                _tally!(taxonomy, fallback_evalerr)
+                continue
+            end
+
+            mutated_content = try
+                apply(site, src_content)
+            catch e
+                base = MutantResult(site, error, 0.0, "apply failed: $e")
+                wr = WarmMutantResult(base, fallback_evalerr, 0.0, 0.0)
+                push!(warm_results, wr)
+                _tally!(taxonomy, fallback_evalerr)
+                continue
+            end
+
+            # Check worker recycle threshold
+            if !isnothing(worker) && worker.alive &&
+               worker.mutants_served >= WORKER_RECYCLE_INTERVAL
+                verbose && println("[gremlins/warm] Recycling worker at $(worker.mutants_served) mutants")
+                _send_request(worker, "{\"cmd\":\"exit\"}", 5.0)
+                _kill_worker!(worker)
+                worker = _spawn_worker(pkgdir, pkg_name)
+                worker_recycles += 1
+                if isnothing(worker)
+                    verbose && println("[gremlins/warm] WARNING: worker re-spawn failed")
+                end
+            end
+
+            # Attempt warm execution
+            ran_warm = false
+            if !isnothing(worker) && worker.alive
+                verbose && print("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… warm ")
+
+                outcome, warm_elapsed, errmsg, fallback_r = _run_mutant_via_worker(
+                    worker, abs_path, mutated_content, src_content, site, warm_test_path, mutant_timeout
+                )
+
+                if fallback_r == fallback_evalerr
+                    # Dynamic fallback: error in worker → cold re-run in shadow
+                    verbose && print("→ fallback_evalerr, cold ")
+                    # Recycle worker on error (state may be contaminated)
+                    if !isnothing(worker) && worker.alive
+                        _send_request(worker, "{\"cmd\":\"exit\"}", 3.0)
+                        _kill_worker!(worker)
+                        worker = _spawn_worker(pkgdir, pkg_name)
+                        worker_recycles += 1
+                        if isnothing(worker)
+                            verbose && println("[gremlins/warm] WARNING: worker re-spawn after fallback failed")
+                        end
+                    end
+                    cold_outcome, cold_elapsed, cold_err = _run_cold_single(site, pkgdir, shadow, shadow_test_path, mutant_timeout)
+                    base = MutantResult(site, cold_outcome, cold_elapsed, cold_err)
+                    wr = WarmMutantResult(base, fallback_evalerr, 0.0, cold_elapsed)
+                    push!(warm_results, wr)
+                    _tally!(taxonomy, fallback_evalerr)
+                    verbose && println(string(cold_outcome))
+                    if !isnothing(cache)
+                        cache_put!(cache, src_content, site.id, cold_outcome, cold_elapsed)
+                    end
+                    continue
+                end
+
+                # Warm execution succeeded
+                base = MutantResult(site, outcome, warm_elapsed, errmsg)
+                wr = WarmMutantResult(base, warm_ok, warm_elapsed, 0.0)
+                push!(warm_results, wr)
+                push!(warm_ran, wr)
+                _tally!(taxonomy, warm_ok)
+                verbose && println(string(outcome), " ($(round(warm_elapsed, digits=2))s)")
+                if !isnothing(cache)
+                    cache_put!(cache, src_content, site.id, outcome, warm_elapsed)
+                end
+                ran_warm = true
+            end
+
+            # Fallback: no worker available — run cold in shadow
+            if !ran_warm
+                verbose && print("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… cold (no_worker) ")
+                cold_outcome, cold_elapsed, cold_err = _run_cold_single(site, pkgdir, shadow, shadow_test_path, mutant_timeout)
                 base = MutantResult(site, cold_outcome, cold_elapsed, cold_err)
                 wr = WarmMutantResult(base, fallback_evalerr, 0.0, cold_elapsed)
                 push!(warm_results, wr)
@@ -805,101 +839,96 @@ function run_mutations_warm(
                 if !isnothing(cache)
                     cache_put!(cache, src_content, site.id, cold_outcome, cold_elapsed)
                 end
+            end
+        end
+
+        total_elapsed = time() - run_t0
+
+        # Shut down worker
+        if !isnothing(worker) && worker.alive
+            _send_request(worker, "{\"cmd\":\"exit\"}", 5.0)
+            _kill_worker!(worker)
+            worker = nothing
+        end
+
+        # I4 agreement invariant — sample min(10, N) warm-ran mutants, re-run cold in shadow
+        # Gate spec: ≥10 sampled. We sample min(10, N) to bound I4 overhead.
+        i4_mismatches = String[]
+        n_sample = min(10, length(warm_ran))
+        sample = warm_ran[1:n_sample]
+
+        verbose && println("[gremlins/warm] I4 agreement check: sampling $(length(sample)) warm-ran mutants cold (in shadow)...")
+        for wr in sample
+            site = wr.base.site
+            cold_outcome2, _, _ = try
+                _run_cold_single(site, pkgdir, shadow, shadow_test_path, mutant_timeout)
+            catch
                 continue
             end
-
-            # Warm execution succeeded
-            base = MutantResult(site, outcome, warm_elapsed, errmsg)
-            wr = WarmMutantResult(base, warm_ok, warm_elapsed, 0.0)
-            push!(warm_results, wr)
-            push!(warm_ran, wr)
-            _tally!(taxonomy, warm_ok)
-            verbose && println(string(outcome), " ($(round(warm_elapsed, digits=2))s)")
-            if !isnothing(cache)
-                cache_put!(cache, src_content, site.id, outcome, warm_elapsed)
-            end
-            ran_warm = true
-        end
-
-        # Fallback: no worker available — run cold
-        if !ran_warm
-            verbose && print("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… cold (no_worker) ")
-            cold_t0 = time()
-            cold_outcome, cold_elapsed, cold_err = _run_cold_single(site, pkgdir, cold_test_path, mutant_timeout)
-            base = MutantResult(site, cold_outcome, cold_elapsed, cold_err)
-            wr = WarmMutantResult(base, fallback_evalerr, 0.0, cold_elapsed)
-            push!(warm_results, wr)
-            _tally!(taxonomy, fallback_evalerr)
-            verbose && println(string(cold_outcome))
-            if !isnothing(cache)
-                cache_put!(cache, src_content, site.id, cold_outcome, cold_elapsed)
+            if cold_outcome2 != wr.base.outcome
+                push!(i4_mismatches,
+                    "I4 MISMATCH: site=$(site.id[1:8]) warm=$(wr.base.outcome) cold=$(cold_outcome2)")
+                verbose && println("[gremlins/warm] WARNING: $(i4_mismatches[end])")
             end
         end
-    end
 
-    total_elapsed = time() - run_t0
+        # Assemble base RunResult from warm_results
+        base_results = [wr.base for wr in warm_results]
+        run_result = RunResult(pkgdir, sorted_sites, base_results, baseline_elapsed, total_elapsed)
 
-    # Shut down worker
-    if !isnothing(worker) && worker.alive
-        _send_request(worker, "{\"cmd\":\"exit\"}", 5.0)
-        _kill_worker!(worker)
-    end
-
-    # I4 agreement invariant — sample min(10, N) warm-ran mutants, re-run cold
-    # Gate spec: ≥10 sampled. We sample min(10, N) to bound I4 overhead.
-    i4_mismatches = String[]
-    n_sample = min(10, length(warm_ran))
-    sample = warm_ran[1:n_sample]
-
-    verbose && println("[gremlins/warm] I4 agreement check: sampling $(length(sample)) warm-ran mutants cold...")
-    for wr in sample
-        site = wr.base.site
-        cold_outcome2, _, _ = try
-            _run_cold_single(site, pkgdir, cold_test_path, mutant_timeout)
-        catch
-            continue
+        return WarmRunResult(
+            run_result,
+            warm_results,
+            taxonomy,
+            length(sample),
+            i4_mismatches,
+            cache_hits,
+            worker_recycles,
+        )
+    finally
+        # Shut down worker if still alive (e.g. error path)
+        if !isnothing(worker) && worker.alive
+            try; _send_request(worker, "{\"cmd\":\"exit\"}", 3.0); catch; end
+            _kill_worker!(worker)
         end
-        if cold_outcome2 != wr.base.outcome
-            push!(i4_mismatches,
-                "I4 MISMATCH: site=$(site.id[1:8]) warm=$(wr.base.outcome) cold=$(cold_outcome2)")
-            verbose && println("[gremlins/warm] WARNING: $(i4_mismatches[end])")
-        end
+        # Clean up shadow
+        rm(shadow; recursive=true, force=true)
     end
-
-    # Assemble base RunResult from warm_results
-    base_results = [wr.base for wr in warm_results]
-    run_result = RunResult(pkgdir, sorted_sites, base_results, baseline_elapsed, total_elapsed)
-
-    return WarmRunResult(
-        run_result,
-        warm_results,
-        taxonomy,
-        length(sample),
-        i4_mismatches,
-        cache_hits,
-        worker_recycles,
-    )
 end
 
 # ─── Internal helpers ─────────────────────────────────────────────────────────
 
-"""Run one mutant on the cold path, returning (outcome, elapsed, errmsg)."""
+"""
+Run one mutant on the cold path, returning (outcome, elapsed, errmsg).
+
+`shadow_dir`: disposable shadow copy of pkgdir (created once by the caller).
+Mutations are applied to the shadow file; the real tree is never touched (I1).
+In-shadow revert after each mutant keeps the shadow valid for the next call.
+`shadow_test_path`: test file path inside the shadow.
+"""
 function _run_cold_single(
     site::MutationSite,
     pkgdir::AbstractString,
-    test_path::AbstractString,
+    shadow_dir::AbstractString,
+    shadow_test_path::AbstractString,
     timeout_secs::Float64,
 )::Tuple{MutantOutcome, Float64, String}
-    abs_path = try
+    real_abs_path = try
         _find_abs_path_or_throw(pkgdir, site)
     catch e
         return (error, 0.0, "cannot locate source: $e")
     end
 
-    original_src = try
-        read(abs_path, String)
+    shadow_abs_path = try
+        _shadow_abs_path(pkgdir, shadow_dir, real_abs_path)
     catch e
-        return (error, 0.0, "cannot read source: $e")
+        return (error, 0.0, "shadow path error: $e")
+    end
+
+    shadow_original_src = try
+        read(shadow_abs_path, String)
+    catch e
+        return (error, 0.0, "cannot read shadow source: $e")
     end
 
     outcome   = survived
@@ -907,9 +936,9 @@ function _run_cold_single(
     mutant_t0 = time()
 
     try
-        apply!(site, abs_path)
+        apply!(site, shadow_abs_path)
         jl = _julia_exe()
-        cmd = Cmd([jl, "--project=$pkgdir", test_path])
+        cmd = Cmd([jl, "--project=$shadow_dir", shadow_test_path])
         exit_code, _ = _run_with_timeout(cmd, timeout_secs)
 
         outcome = if exit_code == :timeout
@@ -923,10 +952,12 @@ function _run_cold_single(
         outcome = error
         err_msg = sprint(showerror, e)
     finally
+        # In-shadow restoration (hygiene — keeps shadow valid for next mutant)
+        # Real tree was never touched; SIGKILL at this point leaves harmless tmp garbage.
         try
-            _atomic_write(abs_path, original_src)
+            _atomic_write(shadow_abs_path, shadow_original_src)
         catch restore_err
-            @error "CRITICAL: failed to restore source after cold run" path=abs_path err=restore_err
+            @warn "[gremlins/warm] Failed to restore shadow source" path=shadow_abs_path err=restore_err
         end
     end
 

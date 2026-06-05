@@ -7,6 +7,7 @@ using Base64
 include("operators.jl")
 include("discover.jl")
 include("patch.jl")
+include("shadow.jl")
 include("coverage.jl")
 include("runner.jl")
 include("cache.jl")
