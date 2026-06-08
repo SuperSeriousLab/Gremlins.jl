@@ -19,5 +19,5 @@ print_warm_summary(result)
 
 MIT, Julia 1.10+. Feedback and operator suggestions welcome.
 
-Repo: <link>
-Docs: <link>
+Repo: https://github.com/SuperSeriousLab/Gremlins.jl
+Docs: https://github.com/SuperSeriousLab/Gremlins.jl/blob/main/docs/usage.md

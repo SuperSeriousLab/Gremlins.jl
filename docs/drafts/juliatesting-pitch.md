@@ -13,6 +13,6 @@ Why the org rather than a personal repo: the thing that killed Vimes was single-
 
 What I'm asking: a review for membership, feedback on the API, and, if accepted, transfer of the repo to JuliaTesting.
 
-Repo: <link>
-Docs: <link>
+Repo: https://github.com/SuperSeriousLab/Gremlins.jl
+Docs: https://github.com/SuperSeriousLab/Gremlins.jl/blob/main/docs/usage.md
 Discourse ANN: <link>
