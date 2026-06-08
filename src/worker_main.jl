@@ -31,6 +31,11 @@
 
 import Base64
 
+# stderr is buffered when not a TTY (worker stderr is inherited / redirected), so
+# diagnostics would stall until exit. Flush after each. stdout stays the JSON-Lines
+# protocol channel — never write diagnostics there.
+welog(msg) = (println(stderr, msg); flush(stderr))
+
 # ─── Minimal JSON utilities ───────────────────────────────────────────────────
 
 function _json_escape(s::AbstractString)::String
@@ -211,7 +216,7 @@ end
 
 function main()
     if length(ARGS) < 1
-        println(stderr, "[gremlins/worker] ERROR: usage: worker_main.jl <PkgName>")
+        welog("[gremlins/worker] ERROR: usage: worker_main.jl <PkgName>")
         exit(1)
     end
 
@@ -222,7 +227,7 @@ function main()
     try
         Core.eval(Main, using_test_expr)
     catch e
-        println(stderr, "[gremlins/worker] WARNING: could not load Test: $e")
+        welog("[gremlins/worker] WARNING: could not load Test: $e")
     end
 
     # Load target package — pays startup cost ONCE
@@ -231,9 +236,9 @@ function main()
         using_expr = Meta.parse("using $pkg_name")
         Core.eval(Main, using_expr)
         pkg_mod = Core.eval(Main, Symbol(pkg_name))
-        println(stderr, "[gremlins/worker] Ready: pkg=$pkg_name module=$pkg_mod")
+        welog("[gremlins/worker] Ready: pkg=$pkg_name module=$pkg_mod")
     catch e
-        println(stderr, "[gremlins/worker] ERROR: could not load package '$pkg_name': $e")
+        welog("[gremlins/worker] ERROR: could not load package '$pkg_name': $e")
         _respond("ok" => false, "err" => "startup: $(sprint(showerror, e))")
         # Continue — parent can still send exit; report error on mutant cmds
     end
@@ -305,7 +310,7 @@ function main()
         end
     end
 
-    println(stderr, "[gremlins/worker] Exiting.")
+    welog("[gremlins/worker] Exiting.")
 end
 
 main()

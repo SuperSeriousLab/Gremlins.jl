@@ -19,6 +19,10 @@
 
 using Gremlins
 
+# Julia buffers stderr when it is not a TTY (e.g. redirected to a log file), so
+# progress lines stay invisible until the process exits. Flush after each write.
+elog(msg) = (println(stderr, msg); flush(stderr))
+
 # ─── Arg parsing (pure functions, no external deps) ────────────────────────────
 
 """
@@ -273,7 +277,7 @@ function main(argv::Vector{String})
         _parse_args(argv)
     catch e
         if e isa ArgumentError
-            println(stderr, "ERROR: $(e.msg)")
+            elog("ERROR: $(e.msg)")
             _print_usage()
             exit(2)
         end
@@ -282,43 +286,43 @@ function main(argv::Vector{String})
 
     pkgdir = abspath(args.pkg)
     if !isdir(pkgdir)
-        println(stderr, "ERROR: --pkg directory does not exist: $(pkgdir)")
+        elog("ERROR: --pkg directory does not exist: $(pkgdir)")
         exit(2)
     end
 
     # Discover
     src_dir = joinpath(pkgdir, "src")
     if !isdir(src_dir)
-        println(stderr, "ERROR: no src/ directory in $(pkgdir)")
+        elog("ERROR: no src/ directory in $(pkgdir)")
         exit(2)
     end
 
-    println(stderr, "[gremlins] Discovering mutations in $(src_dir)...")
+    elog("[gremlins] Discovering mutations in $(src_dir)...")
     sites = try
         Gremlins.discover(src_dir; root=pkgdir)
     catch e
-        println(stderr, "ERROR: discovery failed: $e")
+        elog("ERROR: discovery failed: $e")
         exit(2)
     end
 
     # Apply file filter
     sites = _filter_sites_by_files(sites, args.files)
     if !isempty(args.files)
-        println(stderr, "[gremlins] After --files filter: $(length(sites)) sites")
+        elog("[gremlins] After --files filter: $(length(sites)) sites")
     else
-        println(stderr, "[gremlins] Discovered $(length(sites)) mutation sites")
+        elog("[gremlins] Discovered $(length(sites)) mutation sites")
     end
 
     # Apply --max-sites cap (deterministic: sites are already sorted by discover())
     capped = false
     if args.max_sites > 0 && length(sites) > args.max_sites
-        println(stderr, "[gremlins] Capping to first $(args.max_sites) sites (--max-sites; total=$(length(sites)))")
+        elog("[gremlins] Capping to first $(args.max_sites) sites (--max-sites; total=$(length(sites)))")
         sites = sites[1:args.max_sites]
         capped = true
     end
 
     if isempty(sites)
-        println(stderr, "[gremlins] No mutation sites found (check --files filter and src/ contents)")
+        elog("[gremlins] No mutation sites found (check --files filter and src/ contents)")
         band_line = format_band_line(:weak, NaN, 0, 0)
         println(band_line)
         exit(1)
@@ -330,23 +334,23 @@ function main(argv::Vector{String})
     # Verify test file exists
     test_path = joinpath(pkgdir, test_dir, test_file_bare)
     if !isfile(test_path)
-        println(stderr, "ERROR: test file not found: $(test_path)")
+        elog("ERROR: test file not found: $(test_path)")
         exit(2)
     end
 
     # Baseline
-    println(stderr, "[gremlins] Running baseline test suite ($(test_dir)/$(test_file_bare))...")
+    elog("[gremlins] Running baseline test suite ($(test_dir)/$(test_file_bare))...")
     baseline_elapsed, cmap = try
         Gremlins.baseline_run(pkgdir; test_dir=test_dir, test_file=test_file_bare)
     catch e
-        println(stderr, "ERROR: baseline run failed: $e")
+        elog("ERROR: baseline run failed: $e")
         exit(2)
     end
-    println(stderr, "[gremlins] Baseline: $(round(baseline_elapsed, digits=2))s")
+    elog("[gremlins] Baseline: $(round(baseline_elapsed, digits=2))s")
 
     # Run mutations
     run_result = if args.warm
-        println(stderr, "[gremlins] Running warm-pool mutation run...")
+        elog("[gremlins] Running warm-pool mutation run...")
         warm_result = try
             cache = Gremlins.load_cache(pkgdir)
             wr = Gremlins.run_mutations_warm(pkgdir, sites, cmap;
@@ -358,20 +362,20 @@ function main(argv::Vector{String})
             Gremlins.save_cache(cache)
             wr
         catch e
-            println(stderr, "ERROR: warm run failed: $e")
+            elog("ERROR: warm run failed: $e")
             exit(2)
         end
         Gremlins.print_warm_summary(warm_result)
         # Report I4 mismatches
         if !isempty(warm_result.i4_mismatches)
-            println(stderr, "WARNING: I4 warm/cold mismatches detected:")
+            elog("WARNING: I4 warm/cold mismatches detected:")
             for m in warm_result.i4_mismatches
-                println(stderr, "  $m")
+                elog("  $m")
             end
         end
         warm_result.run
     else
-        println(stderr, "[gremlins] Running cold mutation run...")
+        elog("[gremlins] Running cold mutation run...")
         try
             Gremlins.run_mutations(pkgdir, sites, cmap;
                 test_dir=test_dir,
@@ -379,7 +383,7 @@ function main(argv::Vector{String})
                 baseline_elapsed=baseline_elapsed,
                 verbose=false)
         catch e
-            println(stderr, "ERROR: cold run failed: $e")
+            elog("ERROR: cold run failed: $e")
             exit(2)
         end
     end
@@ -393,9 +397,9 @@ function main(argv::Vector{String})
             open(args.json_out, "w") do io
                 write(io, json_str)
             end
-            println(stderr, "[gremlins] JSON report written to $(args.json_out)")
+            elog("[gremlins] JSON report written to $(args.json_out)")
         catch e
-            println(stderr, "WARNING: failed to write JSON report: $e")
+            elog("WARNING: failed to write JSON report: $e")
         end
     end
 
