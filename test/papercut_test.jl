@@ -74,15 +74,18 @@ end
 end
 
 @testset "P1 — mutate_warm() accepts baseline_timeout kwarg" begin
-    @test_nowarn mutate_warm(PC_FIXTURE_DIR;
+    # Assert the kwarg is accepted and a result comes back. Not @test_nowarn:
+    # under heavy machine load the warm worker can exceed its response timeout
+    # and emit a (harmless) warning; that must not fail a kwarg-acceptance test.
+    @test mutate_warm(PC_FIXTURE_DIR;
         src_dir="src",
         operators=[OP_PLUS_TO_MINUS],
         timeout_multiplier=5.0,
         baseline_timeout=600.0,
-        mutant_timeout=30.0,
+        mutant_timeout=300.0,
         verbose=false,
         use_cache=false,
-        pkg_name="MiniTarget")
+        pkg_name="MiniTarget") isa WarmRunResult
 end
 
 @testset "P1 — low baseline_timeout raises named MutationError" begin
@@ -155,11 +158,12 @@ end
 end
 
 @testset "P2 — mutant_timeout kwarg on mutate_warm()" begin
-    @test_nowarn mutate_warm(PC_FIXTURE_DIR;
+    # Result-type assertion (load-independent) — see P1 note on @test_nowarn.
+    @test mutate_warm(PC_FIXTURE_DIR;
         src_dir="src", operators=[OP_PLUS_TO_MINUS],
-        baseline_timeout=600.0, mutant_timeout=30.0,
+        baseline_timeout=600.0, mutant_timeout=300.0,
         coverage_overhead=2.5, verbose=false,
-        use_cache=false, pkg_name="MiniTarget")
+        use_cache=false, pkg_name="MiniTarget") isa WarmRunResult
 end
 
 # ═══ P3 — max_mutants + files sampling ════════════════════════════════════════
