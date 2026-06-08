@@ -294,6 +294,133 @@ const OP_STMT_DELETE = MutationOperator(
     (node, src) -> "",
 )
 
+# ─── 8. Constant-pool / homologous literal swap ──────────────────────────────
+# Replace an integer literal with another DISTINCT integer literal already
+# present in the same enclosing function scope (e.g. 0 ↔ 1, n-bound ↔ 2). These
+# are *in-domain* substitutions — the swapped value is one the author actually
+# used nearby — so a surviving mutant is damning: the suite cannot tell two of
+# the function's own constants apart. One mutant is emitted per distinct sibling
+# value (the replacer returns a Vector{String}; discover.jl fans it out).
+#
+# Generalizes to homologous identifier pairs (firstindex↔lastindex, first↔last)
+# via the same Vector-returning replacer — left as a follow-on; this spike ships
+# the canonical integer-literal pool. NOT in DEFAULT_OPERATORS yet (opt-in via
+# `operators=[OP_CONST_POOL]`) to avoid perturbing the v1 default site counts.
+
+"""Walk up to the nearest enclosing function-definition node, or `nothing`."""
+function _enclosing_func(node::JuliaSyntax.SyntaxNode)
+    p = node.parent
+    while !isnothing(p)
+        k = JuliaSyntax.kind(p)
+        if k == JuliaSyntax.K"function"
+            return p
+        elseif k == JuliaSyntax.K"="
+            # Short-form function `f(x) = ...`: lhs (first child) is a call.
+            cs = JuliaSyntax.children(p)
+            if !isnothing(cs) && !isempty(cs) &&
+               JuliaSyntax.kind(cs[1]) == JuliaSyntax.K"call"
+                return p
+            end
+        end
+        p = p.parent
+    end
+    return nothing
+end
+
+"""Collect every Integer-literal value under `node` (depth-first) into `acc`."""
+function _collect_int_literals!(acc::Vector{Int}, node::JuliaSyntax.SyntaxNode)
+    if JuliaSyntax.is_leaf(node) &&
+       JuliaSyntax.kind(node) == JuliaSyntax.K"Integer" &&
+       node.val isa Integer
+        push!(acc, Int(node.val))
+    end
+    cs = JuliaSyntax.children(node)
+    if !isnothing(cs)
+        for c in cs
+            _collect_int_literals!(acc, c)
+        end
+    end
+    return acc
+end
+
+const OP_CONST_POOL = MutationOperator(
+    :literal_const_pool,
+    "literal: constant-pool swap",
+    (node, src) -> begin
+        (JuliaSyntax.is_leaf(node) &&
+         JuliaSyntax.kind(node) == JuliaSyntax.K"Integer" &&
+         node.val isa Integer &&
+         !_is_inside_macro_def(node)) || return false
+        fn = _enclosing_func(node)
+        isnothing(fn) && return false
+        self = Int(node.val)
+        any(v -> v != self, _collect_int_literals!(Int[], fn))
+    end,
+    (node, src) -> begin
+        fn = _enclosing_func(node)
+        isnothing(fn) && return String[]
+        self = Int(node.val)
+        others = sort!(unique!(filter(v -> v != self,
+                                      _collect_int_literals!(Int[], fn))))
+        String[string(v) for v in others]
+    end,
+)
+
+# ─── 9. Dispatch mutation — signature type-annotation swap ────────────────────
+# JULIA-UNIQUE. A method parameter's type annotation IS its dispatch contract.
+# Swap a parameter's type to an incompatible one (`::Int` → `::String`): every
+# call that relied on the original type now MethodErrors (single-method case) or
+# dispatches to a different method (multi-method case). A SURVIVING mutant means
+# the type constraint is never exercised — a genuine dispatch-coverage gap. No
+# other language's mutation tooling can express this; it requires multiple
+# dispatch. Static + falsifiable; opt-in (not in DEFAULT_OPERATORS).
+#
+# Realization note: a literal "redirect this call to a sibling method" mutation
+# would need the runtime type lattice / reflection, which static AST discovery
+# does not have. Mutating the dispatch *contract* at the definition site reaches
+# the same question — does the suite pin dispatch? — without leaving static.
+
+"""Static incompatible-type swap table: original type ↦ a guaranteed-disjoint
+type, so a call with the original argument type stops matching the method."""
+const _DISPATCH_SWAP = Dict{Symbol,String}(
+    :Int     => "String", :Int64 => "String", :Int32 => "String",
+    :Integer => "String", :Real  => "String", :Number => "String",
+    :Float64 => "String", :Float32 => "String", :AbstractFloat => "String",
+    :Bool    => "String",
+    :String  => "Int", :AbstractString => "Int", :Symbol => "Int", :Char => "Int",
+)
+
+"""True iff `node` is a `name::Type` annotation in a method-signature parameter
+position (parent is the signature `call`, grandparent the `function` def)."""
+function _is_signature_param(node::JuliaSyntax.SyntaxNode)::Bool
+    JuliaSyntax.kind(node) == JuliaSyntax.K"::" || return false
+    JuliaSyntax.is_leaf(node) && return false
+    cs = JuliaSyntax.children(node)
+    (!isnothing(cs) && length(cs) == 2) || return false
+    p = node.parent
+    (!isnothing(p) && JuliaSyntax.kind(p) == JuliaSyntax.K"call") || return false
+    gp = p.parent
+    !isnothing(gp) && JuliaSyntax.kind(gp) == JuliaSyntax.K"function"
+end
+
+const OP_DISPATCH_SWAP = MutationOperator(
+    :dispatch_type_swap,
+    "dispatch: signature type swap",
+    (node, src) -> begin
+        (_is_signature_param(node) && !_is_inside_macro_def(node)) || return false
+        tnode = JuliaSyntax.children(node)[2]
+        JuliaSyntax.is_leaf(tnode) &&
+            tnode.val isa Symbol &&
+            haskey(_DISPATCH_SWAP, tnode.val)
+    end,
+    (node, src) -> begin
+        cs = JuliaSyntax.children(node)
+        name = node_text(cs[1], src)
+        newt = _DISPATCH_SWAP[cs[2].val]
+        "$(name)::$(newt)"
+    end,
+)
+
 # ─── Default operator set ──────────────────────────────────────────────────────
 
 """

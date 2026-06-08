@@ -5,6 +5,7 @@ using SHA
 using Base64
 
 include("operators.jl")
+include("equivalence.jl")
 include("discover.jl")
 include("patch.jl")
 include("shadow.jl")
@@ -32,6 +33,8 @@ export OP_INT_INCR, OP_INT_DECR
 export OP_TRUE_TO_FALSE, OP_FALSE_TO_TRUE
 export OP_RETURN_NOTHING
 export OP_STMT_DELETE
+export OP_CONST_POOL
+export OP_DISPATCH_SWAP
 
 # Discovery
 export discover
