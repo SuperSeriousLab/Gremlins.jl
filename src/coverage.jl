@@ -71,7 +71,7 @@ end
 
 """
     baseline_run(pkgdir; test_dir="test", test_file="runtests.jl",
-                 timeout=300.0) -> (elapsed::Float64, CoverageMap)
+                 timeout=600.0) -> (elapsed::Float64, CoverageMap)
 
 Run the package's test suite once with `--code-coverage=user` to build
 the coverage map. Returns elapsed time in seconds and a `CoverageMap`.
@@ -92,7 +92,7 @@ function baseline_run(
     pkgdir::AbstractString;
     test_dir::AbstractString = "test",
     test_file::AbstractString = "runtests.jl",
-    timeout::Float64 = 300.0,
+    timeout::Float64 = 600.0,
 )::Tuple{Float64, CoverageMap}
     pkgdir = abspath(pkgdir)
     test_path = joinpath(pkgdir, test_dir, test_file)
@@ -115,7 +115,7 @@ function baseline_run(
         if exit_code == :timeout
             throw(MutationError(
                 "baseline_run: test suite timed out after $(timeout)s — " *
-                "cannot establish baseline"
+                "cannot establish baseline; raise `baseline_timeout` on mutate()"
             ))
         end
         if exit_code != 0

@@ -599,6 +599,8 @@ end
                        test_dir="test", test_file="runtests.jl",
                        baseline_elapsed=nothing,
                        timeout_multiplier=3.0,
+                       coverage_overhead=2.5,
+                       mutant_timeout=nothing,
                        n_workers=nothing,    # accepted for API compat; warm uses 1 worker
                        verbose=false,
                        cache=nothing,
@@ -628,6 +630,12 @@ inferred from pkgdir/Project.toml. Required for worker startup.
 `test_file`: for the warm path, if a file named `<stem>_warm.jl` exists alongside
 `test_file`, it is used instead (warm-compatible variant that uses `using PkgName`
 rather than `include(src)`). The cold path always uses `test_file` (inside shadow).
+
+`coverage_overhead`: factor by which `--code-coverage=user` inflates the baseline
+elapsed time (default 2.5). Used to estimate plain-run time for the per-mutant
+timeout. See run_mutations for full rationale.
+
+`mutant_timeout`: explicit per-mutant timeout override. Bypasses derivation.
 """
 function run_mutations_warm(
     pkgdir::AbstractString,
@@ -637,6 +645,8 @@ function run_mutations_warm(
     test_file::AbstractString    = "runtests.jl",
     baseline_elapsed::Union{Float64, Nothing} = nothing,
     timeout_multiplier::Float64  = 3.0,
+    coverage_overhead::Float64   = 2.5,
+    mutant_timeout::Union{Float64, Nothing} = nothing,
     n_workers::Union{Int, Nothing} = nothing,  # API compat — warm uses 1 worker
     verbose::Bool                = false,
     cache::Union{MutantCache, Nothing} = nothing,
@@ -657,8 +667,24 @@ function run_mutations_warm(
         verbose && println("[gremlins/warm] Baseline: $(round(elapsed_b, digits=2))s")
     end
 
-    mutant_timeout = max(10.0, baseline_elapsed * timeout_multiplier)
-    verbose && println("[gremlins/warm] Timeout per mutant: $(round(mutant_timeout, digits=1))s")
+    # Derive per-mutant timeout (same logic as run_mutations — coverage overhead aware)
+    derived_timeout = if !isnothing(mutant_timeout)
+        mutant_timeout
+    else
+        est_plain = baseline_elapsed / coverage_overhead
+        max(COLD_START_TIMEOUT_FLOOR, est_plain * timeout_multiplier)
+    end
+    if verbose
+        if !isnothing(mutant_timeout)
+            println("[gremlins/warm] Mutant timeout: $(round(derived_timeout, digits=1))s (explicit override)")
+        else
+            est_plain = baseline_elapsed / coverage_overhead
+            println("[gremlins/warm] baseline (coverage) $(round(baseline_elapsed, digits=2))s, " *
+                    "estimated plain ≈ $(round(est_plain, digits=2))s (÷$(coverage_overhead)), " *
+                    "derived mutant timeout $(round(derived_timeout, digits=1))s")
+        end
+    end
+    actual_mutant_timeout = derived_timeout
 
     # Sort sites deterministically (I2)
     sorted_sites = sort(sites, by = s -> s.id)
@@ -694,7 +720,10 @@ function run_mutations_warm(
         for (i, site) in enumerate(sorted_sites)
             # Coverage check
             if !is_covered(cmap, site)
-                verbose && println("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… no_coverage")
+                if verbose
+                    println("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… no_coverage")
+                    flush(stdout)
+                end
                 base = MutantResult(site, no_coverage, 0.0, "")
                 wr = WarmMutantResult(base, warm_ok, 0.0, 0.0)
                 push!(warm_results, wr)
@@ -712,7 +741,10 @@ function run_mutations_warm(
                     base = MutantResult(site, cached.outcome, cached.elapsed, "")
                     wr = WarmMutantResult(base, warm_ok, 0.0, 0.0)
                     push!(warm_results, wr)
-                    verbose && println("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… cache_hit ($(cached.outcome))")
+                    if verbose
+                        println("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… cache_hit ($(cached.outcome))")
+                        flush(stdout)
+                    end
                     _tally!(taxonomy, warm_ok)
                     continue
                 end
@@ -722,8 +754,11 @@ function run_mutations_warm(
             elig = classify_warm_eligibility(site, pkgdir)
 
             if !elig.eligible
-                verbose && println("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… cold ($(elig.reason))")
-                cold_outcome, cold_elapsed, cold_err = _run_cold_single(site, pkgdir, shadow, shadow_test_path, mutant_timeout)
+                if verbose
+                    println("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… cold ($(elig.reason))")
+                    flush(stdout)
+                end
+                cold_outcome, cold_elapsed, cold_err = _run_cold_single(site, pkgdir, shadow, shadow_test_path, actual_mutant_timeout)
                 base = MutantResult(site, cold_outcome, cold_elapsed, cold_err)
                 wr = WarmMutantResult(base, elig.reason, 0.0, cold_elapsed)
                 push!(warm_results, wr)
@@ -783,15 +818,21 @@ function run_mutations_warm(
             # Attempt warm execution
             ran_warm = false
             if !isnothing(worker) && worker.alive
-                verbose && print("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… warm ")
+                if verbose
+                    print("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… warm ")
+                    flush(stdout)
+                end
 
                 outcome, warm_elapsed, errmsg, fallback_r = _run_mutant_via_worker(
-                    worker, abs_path, mutated_content, src_content, site, warm_test_path, mutant_timeout
+                    worker, abs_path, mutated_content, src_content, site, warm_test_path, actual_mutant_timeout
                 )
 
                 if fallback_r == fallback_evalerr
                     # Dynamic fallback: error in worker → cold re-run in shadow
-                    verbose && print("→ fallback_evalerr, cold ")
+                    if verbose
+                        print("→ fallback_evalerr, cold ")
+                        flush(stdout)
+                    end
                     # Recycle worker on error (state may be contaminated)
                     if !isnothing(worker) && worker.alive
                         _send_request(worker, "{\"cmd\":\"exit\"}", 3.0)
@@ -802,12 +843,15 @@ function run_mutations_warm(
                             verbose && println("[gremlins/warm] WARNING: worker re-spawn after fallback failed")
                         end
                     end
-                    cold_outcome, cold_elapsed, cold_err = _run_cold_single(site, pkgdir, shadow, shadow_test_path, mutant_timeout)
+                    cold_outcome, cold_elapsed, cold_err = _run_cold_single(site, pkgdir, shadow, shadow_test_path, actual_mutant_timeout)
                     base = MutantResult(site, cold_outcome, cold_elapsed, cold_err)
                     wr = WarmMutantResult(base, fallback_evalerr, 0.0, cold_elapsed)
                     push!(warm_results, wr)
                     _tally!(taxonomy, fallback_evalerr)
-                    verbose && println(string(cold_outcome))
+                    if verbose
+                        println(string(cold_outcome))
+                        flush(stdout)
+                    end
                     if !isnothing(cache)
                         cache_put!(cache, src_content, site.id, cold_outcome, cold_elapsed)
                     end
@@ -820,7 +864,10 @@ function run_mutations_warm(
                 push!(warm_results, wr)
                 push!(warm_ran, wr)
                 _tally!(taxonomy, warm_ok)
-                verbose && println(string(outcome), " ($(round(warm_elapsed, digits=2))s)")
+                if verbose
+                    println(string(outcome), " ($(round(warm_elapsed, digits=2))s)")
+                    flush(stdout)
+                end
                 if !isnothing(cache)
                     cache_put!(cache, src_content, site.id, outcome, warm_elapsed)
                 end
@@ -829,13 +876,19 @@ function run_mutations_warm(
 
             # Fallback: no worker available — run cold in shadow
             if !ran_warm
-                verbose && print("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… cold (no_worker) ")
-                cold_outcome, cold_elapsed, cold_err = _run_cold_single(site, pkgdir, shadow, shadow_test_path, mutant_timeout)
+                if verbose
+                    print("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… cold (no_worker) ")
+                    flush(stdout)
+                end
+                cold_outcome, cold_elapsed, cold_err = _run_cold_single(site, pkgdir, shadow, shadow_test_path, actual_mutant_timeout)
                 base = MutantResult(site, cold_outcome, cold_elapsed, cold_err)
                 wr = WarmMutantResult(base, fallback_evalerr, 0.0, cold_elapsed)
                 push!(warm_results, wr)
                 _tally!(taxonomy, fallback_evalerr)
-                verbose && println(string(cold_outcome))
+                if verbose
+                    println(string(cold_outcome))
+                    flush(stdout)
+                end
                 if !isnothing(cache)
                     cache_put!(cache, src_content, site.id, cold_outcome, cold_elapsed)
                 end
@@ -861,7 +914,7 @@ function run_mutations_warm(
         for wr in sample
             site = wr.base.site
             cold_outcome2, _, _ = try
-                _run_cold_single(site, pkgdir, shadow, shadow_test_path, mutant_timeout)
+                _run_cold_single(site, pkgdir, shadow, shadow_test_path, actual_mutant_timeout)
             catch
                 continue
             end
@@ -1021,6 +1074,11 @@ end
                 test_dir="test", test_file="runtests.jl",
                 operators=DEFAULT_OPERATORS,
                 timeout_multiplier=3.0,
+                baseline_timeout=600.0,
+                coverage_overhead=2.5,
+                mutant_timeout=nothing,
+                max_mutants=nothing,
+                files=nothing,
                 n_workers=nothing,
                 verbose=false,
                 use_cache=true,
@@ -1028,6 +1086,18 @@ end
 
 High-level entry point for warm-pool mutation run.
 Discovers mutations, runs baseline, executes all mutants with warm-pool + cache.
+
+`baseline_timeout`: timeout in seconds for the baseline test run (default 600.0).
+
+`coverage_overhead`: factor by which `--code-coverage=user` inflates the baseline
+elapsed time (default 2.5). Used to estimate plain-run time for mutant timeouts.
+
+`mutant_timeout`: explicit per-mutant timeout override. Bypasses derivation.
+
+`max_mutants`: cap the number of mutation sites (deterministic round-robin).
+
+`files`: restrict to sites whose relpath matches any entry (same normalization as
+CLI `--files`: strips leading `./`, backslash→slash, basename or suffix match).
 """
 function mutate_warm(
     pkgdir::AbstractString;
@@ -1036,6 +1106,11 @@ function mutate_warm(
     test_file::AbstractString     = "runtests.jl",
     operators::Vector{MutationOperator} = DEFAULT_OPERATORS,
     timeout_multiplier::Float64   = 3.0,
+    baseline_timeout::Float64     = 600.0,
+    coverage_overhead::Float64    = 2.5,
+    mutant_timeout::Union{Float64, Nothing} = nothing,
+    max_mutants::Union{Int, Nothing} = nothing,
+    files::Union{Vector{String}, Nothing} = nothing,
     n_workers::Union{Int, Nothing} = nothing,
     verbose::Bool                 = false,
     use_cache::Bool               = true,
@@ -1047,8 +1122,20 @@ function mutate_warm(
     sites = discover(joinpath(pkgdir, src_dir); operators=operators, root=pkgdir)
     verbose && println("[gremlins/warm] Discovered $(length(sites)) mutation sites")
 
+    # Apply files filter (same normalization as CLI --files)
+    if !isnothing(files) && !isempty(files)
+        sites = _filter_sites_by_files(sites, files)
+        verbose && println("[gremlins/warm] After files filter: $(length(sites)) sites")
+    end
+
+    # Apply max_mutants cap with deterministic round-robin sampling
+    if !isnothing(max_mutants) && length(sites) > max_mutants
+        sites = _sample_sites_round_robin(sites, max_mutants)
+        verbose && println("[gremlins/warm] Capped to $(length(sites)) sites (max_mutants=$max_mutants)")
+    end
+
     verbose && println("[gremlins/warm] Running baseline test suite...")
-    baseline_elapsed, cmap = baseline_run(pkgdir; test_dir=test_dir, test_file=test_file)
+    baseline_elapsed, cmap = baseline_run(pkgdir; test_dir=test_dir, test_file=test_file, timeout=baseline_timeout)
     verbose && println("[gremlins/warm] Baseline: $(round(baseline_elapsed, digits=2))s")
 
     cache = use_cache ? load_cache(pkgdir) : nothing
@@ -1058,6 +1145,8 @@ function mutate_warm(
         test_file=test_file,
         baseline_elapsed=baseline_elapsed,
         timeout_multiplier=timeout_multiplier,
+        coverage_overhead=coverage_overhead,
+        mutant_timeout=mutant_timeout,
         n_workers=n_workers,
         verbose=verbose,
         cache=cache,

@@ -595,3 +595,6 @@ include("warm_test.jl")
 
 # ─── M3a CLI tests ────────────────────────────────────────────────────────────
 include("cli_test.jl")
+
+# ─── M2.1 papercut hardening tests ───────────────────────────────────────────
+include("papercut_test.jl")

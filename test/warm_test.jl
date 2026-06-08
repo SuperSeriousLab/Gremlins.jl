@@ -23,6 +23,12 @@ const W_FIXTURE_DIR = joinpath(@__DIR__, "fixtures", "MiniTarget")
 # The worker starts with --project=MiniTarget_dir so MiniTarget is loaded once.
 # Warm worker evals mutations into the MiniTarget module; tests pick up the changes.
 
+# Falsifiability fixtures must be deterministic regardless of machine load.
+# The derived per-mutant timeout scales with the measured baseline and can fall
+# to the floor on a fast/loaded read, mis-classifying a killable mutant. Pin an
+# explicit, generous mutant_timeout so outcome is decided by test semantics only.
+const W_FIXTURE_MUTANT_TIMEOUT = 300.0
+
 # KILLABLE site: OP_PLUS_TO_MINUS (a+b → a-b), tests check add(2,3)==5
 const W2_RESULT_PLUS = let
     mutate_warm(W_FIXTURE_DIR;
@@ -30,7 +36,7 @@ const W2_RESULT_PLUS = let
         test_dir="test",
         test_file="runtests.jl",
         operators=[OP_PLUS_TO_MINUS],
-        timeout_multiplier=5.0,
+        mutant_timeout=W_FIXTURE_MUTANT_TIMEOUT,
         verbose=false,
         use_cache=false,
         pkg_name="MiniTarget")
@@ -43,7 +49,7 @@ const W2_RESULT_GT = let
         test_dir="test",
         test_file="runtests.jl",
         operators=[OP_GT_TO_GE],
-        timeout_multiplier=5.0,
+        mutant_timeout=W_FIXTURE_MUTANT_TIMEOUT,
         verbose=false,
         use_cache=false,
         pkg_name="MiniTarget")
@@ -119,7 +125,7 @@ const W2_TAXONOMY_RESULT = let
         test_dir="test",
         test_file="runtests.jl",
         operators=[OP_PLUS_TO_MINUS, OP_INT_INCR, OP_INT_DECR],
-        timeout_multiplier=5.0,
+        mutant_timeout=W_FIXTURE_MUTANT_TIMEOUT,
         verbose=false,
         use_cache=false,
         pkg_name="WarmTarget")
@@ -405,7 +411,7 @@ end
         test_dir="test",
         test_file="runtests.jl",
         operators=[OP_PLUS_TO_MINUS],
-        timeout_multiplier=5.0,
+        mutant_timeout=W_FIXTURE_MUTANT_TIMEOUT,
         verbose=false)
     warm_result = W2_RESULT_PLUS
 

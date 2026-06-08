@@ -13,6 +13,12 @@
 #   I2  — Deterministic: mutants processed in sorted order (id).
 #   I3  — Timeout = 3× baseline elapsed (configurable).
 
+# Floor for the derived per-mutant timeout. Every mutant runs as a fresh
+# `julia --project test` subprocess that pays cold-start precompile (~10-20s)
+# before any test executes; a floor below that spuriously classifies slow-start
+# mutants on small/fast-baseline packages as `timeout` instead of killed.
+const COLD_START_TIMEOUT_FLOOR = 60.0
+
 # ─── Outcome enum ─────────────────────────────────────────────────────────────
 
 """
@@ -95,6 +101,8 @@ end
                   test_dir="test", test_file="runtests.jl",
                   baseline_elapsed=nothing,
                   timeout_multiplier=3.0,
+                  coverage_overhead=2.5,
+                  mutant_timeout=nothing,
                   verbose=false) -> RunResult
 
 For each `MutationSite` in `sites` (processed in sorted id order):
@@ -110,6 +118,17 @@ For each `MutationSite` in `sites` (processed in sorted id order):
 `baseline_elapsed`: if provided, timeout = baseline_elapsed × timeout_multiplier.
 If not provided, a new baseline run is performed.
 
+`coverage_overhead`: the factor by which coverage instrumentation inflates the
+baseline elapsed time vs. a plain run (default 2.5 — empirically ~2–3× on typical
+packages). The derived per-mutant timeout uses `est_plain = baseline_elapsed /
+coverage_overhead` to avoid grossly over-allocated timeouts (e.g. a 575s coverage
+baseline on SQLite.jl would otherwise yield ~29min per mutant, while the real plain
+run is ~205s).
+
+`mutant_timeout`: explicit per-mutant timeout in seconds. When set, bypasses the
+`est_plain * timeout_multiplier` derivation entirely. Use when you know the exact
+budget needed.
+
 Shadow is created ONCE per run (not per mutant) and cleaned up in finally.
 """
 function run_mutations(
@@ -120,6 +139,8 @@ function run_mutations(
     test_file::AbstractString    = "runtests.jl",
     baseline_elapsed::Union{Float64, Nothing} = nothing,
     timeout_multiplier::Float64  = 3.0,
+    coverage_overhead::Float64   = 2.5,
+    mutant_timeout::Union{Float64, Nothing} = nothing,
     verbose::Bool                = false,
 )::RunResult
     pkgdir = abspath(pkgdir)
@@ -132,8 +153,28 @@ function run_mutations(
         verbose && println("[gremlins] Baseline: $(round(elapsed_b, digits=2))s")
     end
 
-    mutant_timeout = max(10.0, baseline_elapsed * timeout_multiplier)
-    verbose && println("[gremlins] Mutant timeout: $(round(mutant_timeout, digits=1))s ($(timeout_multiplier)x baseline)")
+    # Derive per-mutant timeout:
+    #   est_plain = baseline_elapsed / coverage_overhead  (removes coverage inflation)
+    #   mutant_timeout = max(COLD_START_TIMEOUT_FLOOR, est_plain * timeout_multiplier)
+    # coverage_overhead accounts for the ~2-3x slowdown from --code-coverage=user.
+    # An explicit mutant_timeout kwarg bypasses this derivation entirely.
+    derived_timeout = if !isnothing(mutant_timeout)
+        mutant_timeout
+    else
+        est_plain = baseline_elapsed / coverage_overhead
+        max(COLD_START_TIMEOUT_FLOOR, est_plain * timeout_multiplier)
+    end
+    if verbose
+        if !isnothing(mutant_timeout)
+            println("[gremlins] Mutant timeout: $(round(derived_timeout, digits=1))s (explicit override)")
+        else
+            est_plain = baseline_elapsed / coverage_overhead
+            println("[gremlins] baseline (coverage) $(round(baseline_elapsed, digits=2))s, " *
+                    "estimated plain ≈ $(round(est_plain, digits=2))s (÷$(coverage_overhead)), " *
+                    "derived mutant timeout $(round(derived_timeout, digits=1))s")
+        end
+    end
+    actual_mutant_timeout = derived_timeout
 
     # Sort sites deterministically by id
     sorted_sites = sort(sites, by = s -> s.id)
@@ -153,12 +194,18 @@ function run_mutations(
         for (i, site) in enumerate(sorted_sites)
             # 1. Coverage check
             if !is_covered(cmap, site)
-                verbose && println("[gremlins] [$i/$(length(sorted_sites))] $(site.id[1:8])… no_coverage")
+                if verbose
+                    println("[gremlins] [$i/$(length(sorted_sites))] $(site.id[1:8])… no_coverage")
+                    flush(stdout)
+                end
                 push!(results, MutantResult(site, no_coverage, 0.0, ""))
                 continue
             end
 
-            verbose && print("[gremlins] [$i/$(length(sorted_sites))] $(site.id[1:8])… ")
+            if verbose
+                print("[gremlins] [$i/$(length(sorted_sites))] $(site.id[1:8])… ")
+                flush(stdout)
+            end
 
             # 2. Determine shadow path (real path is never touched)
             real_abs_path = _site_abs_path(pkgdir, site)
@@ -166,7 +213,10 @@ function run_mutations(
                 _shadow_abs_path(pkgdir, shadow, real_abs_path)
             catch e
                 push!(results, MutantResult(site, error, 0.0, "shadow path error: $e"))
-                verbose && println("error (shadow path)")
+                if verbose
+                    println("error (shadow path)")
+                    flush(stdout)
+                end
                 continue
             end
 
@@ -178,7 +228,10 @@ function run_mutations(
                 read(shadow_abs_path, String)
             catch e
                 push!(results, MutantResult(site, error, 0.0, "cannot read shadow source: $e"))
-                verbose && println("error (read shadow)")
+                if verbose
+                    println("error (read shadow)")
+                    flush(stdout)
+                end
                 continue
             end
 
@@ -188,7 +241,7 @@ function run_mutations(
 
                 # 4. Run test subprocess against shadow project
                 cmd = Cmd([jl, "--project=$shadow", shadow_test_path])
-                exit_code, _ = _run_with_timeout(cmd, mutant_timeout)
+                exit_code, _ = _run_with_timeout(cmd, actual_mutant_timeout)
 
                 if exit_code == :timeout
                     outcome = timeout
@@ -212,7 +265,10 @@ function run_mutations(
 
             elapsed = time() - mutant_t0
             push!(results, MutantResult(site, outcome, elapsed, err_msg))
-            verbose && println(string(outcome), " ($(round(elapsed, digits=2))s)")
+            if verbose
+                println(string(outcome), " ($(round(elapsed, digits=2))s)")
+                flush(stdout)
+            end
         end
     finally
         # Clean up shadow — a SIGKILL skip of this cleanup leaves harmless tmp garbage
@@ -231,9 +287,31 @@ end
            test_dir="test", test_file="runtests.jl",
            operators=DEFAULT_OPERATORS,
            timeout_multiplier=3.0,
+           baseline_timeout=600.0,
+           coverage_overhead=2.5,
+           mutant_timeout=nothing,
+           max_mutants=nothing,
+           files=nothing,
            verbose=false) -> RunResult
 
 High-level entry point: discover mutations, run baseline, execute all mutants.
+
+`baseline_timeout`: timeout in seconds for the baseline test run (default 600.0).
+Raise this if your package's covered test suite exceeds 10 minutes.
+
+`coverage_overhead`: factor by which `--code-coverage=user` inflates the baseline
+elapsed time (default 2.5). Used to estimate plain-run time for deriving the
+per-mutant timeout budget. Typical packages are 2–3×.
+
+`mutant_timeout`: explicit per-mutant timeout. When set, bypasses the
+`est_plain * timeout_multiplier` derivation. Useful for pinning a hard bound.
+
+`max_mutants`: cap the number of mutation sites to this many (deterministic spread:
+sorted by id, then round-robin across files). `nothing` = no cap.
+
+`files`: restrict to sites whose relpath matches any of these entries. Accepts
+bare filenames, relative paths, and `./`-prefixed paths — same normalization as
+the CLI `--files` flag. `nothing` = all files.
 """
 function mutate(
     pkgdir::AbstractString;
@@ -242,6 +320,11 @@ function mutate(
     test_file::AbstractString     = "runtests.jl",
     operators::Vector{MutationOperator} = DEFAULT_OPERATORS,
     timeout_multiplier::Float64   = 3.0,
+    baseline_timeout::Float64     = 600.0,
+    coverage_overhead::Float64    = 2.5,
+    mutant_timeout::Union{Float64, Nothing} = nothing,
+    max_mutants::Union{Int, Nothing} = nothing,
+    files::Union{Vector{String}, Nothing} = nothing,
     verbose::Bool                 = false,
 )::RunResult
     pkgdir = abspath(pkgdir)
@@ -251,9 +334,21 @@ function mutate(
     sites = discover(joinpath(pkgdir, src_dir); operators=operators, root=pkgdir)
     verbose && println("[gremlins] Discovered $(length(sites)) mutation sites")
 
+    # Apply files filter (same normalization as CLI --files)
+    if !isnothing(files) && !isempty(files)
+        sites = _filter_sites_by_files(sites, files)
+        verbose && println("[gremlins] After files filter: $(length(sites)) sites")
+    end
+
+    # Apply max_mutants cap with deterministic round-robin sampling
+    if !isnothing(max_mutants) && length(sites) > max_mutants
+        sites = _sample_sites_round_robin(sites, max_mutants)
+        verbose && println("[gremlins] Capped to $(length(sites)) sites (max_mutants=$max_mutants)")
+    end
+
     verbose && println("[gremlins] Running baseline test suite...")
     baseline_elapsed, cmap = baseline_run(pkgdir;
-        test_dir=test_dir, test_file=test_file)
+        test_dir=test_dir, test_file=test_file, timeout=baseline_timeout)
     verbose && println("[gremlins] Baseline: $(round(baseline_elapsed, digits=2))s  coverage: $cmap")
 
     return run_mutations(pkgdir, sites, cmap;
@@ -261,7 +356,102 @@ function mutate(
         test_file=test_file,
         baseline_elapsed=baseline_elapsed,
         timeout_multiplier=timeout_multiplier,
+        coverage_overhead=coverage_overhead,
+        mutant_timeout=mutant_timeout,
         verbose=verbose)
+end
+
+# ─── Sampling helper (P3) ─────────────────────────────────────────────────────
+
+"""
+    _normalize_relpath(pat::String) -> String
+
+Normalize a file pattern for robust path matching:
+- Replace backslashes with forward slashes (Windows-safe)
+- Strip leading "./" (e.g. "./src/foo.jl" → "src/foo.jl")
+
+Same normalization as the CLI `--files` flag — do NOT duplicate divergent logic.
+"""
+function _normalize_relpath(pat::String)::String
+    p = replace(pat, '\\' => '/')
+    while startswith(p, "./")
+        p = p[3:end]
+    end
+    return p
+end
+
+"""
+    _filter_sites_by_files(sites, file_patterns) -> Vector{MutationSite}
+
+Keep only sites whose relpath matches any of the given patterns.
+Matching rules (applied after normalizing the pattern with _normalize_relpath):
+1. Exact match: relpath == normalized_pat
+2. Suffix match: endswith(relpath, "/" * normalized_pat)
+3. Basename match: endswith(relpath, "/" * basename(normalized_pat)) OR relpath == basename
+
+All comparisons use forward slashes. Empty patterns = no filter (all sites).
+Normalization is the same as the CLI -- do not duplicate divergent logic.
+"""
+function _filter_sites_by_files(sites::Vector{MutationSite}, file_patterns::Vector{String})::Vector{MutationSite}
+    isempty(file_patterns) && return sites
+    return filter(sites) do site
+        rp = site.relpath
+        any(file_patterns) do raw_pat
+            pat = _normalize_relpath(raw_pat)
+            rp == pat && return true
+            endswith(rp, "/" * pat) && return true
+            bn = basename(pat)
+            endswith(rp, "/" * bn) || rp == bn
+        end
+    end
+end
+
+"""
+    _sample_sites_round_robin(sites, n) -> Vector{MutationSite}
+
+Take a deterministic sample of `n` sites from `sites` using round-robin across
+files, so the cap is balanced rather than front-loaded into one file.
+
+Algorithm:
+1. Sort all sites by id (already deterministic per I2).
+2. Bucket by relpath.
+3. Round-robin: pick one site from each bucket in sorted-relpath order until n reached.
+
+Deterministic: same input → same output. No randomness, no clock.
+"""
+function _sample_sites_round_robin(sites::Vector{MutationSite}, n::Int)::Vector{MutationSite}
+    n >= length(sites) && return sites
+
+    # Sort by id first (deterministic, per I2)
+    sorted = sort(sites, by = s -> s.id)
+
+    # Bucket by relpath; keep buckets in sorted-relpath order
+    bucket_keys = unique(sort([s.relpath for s in sorted]))
+    buckets = Dict{String, Vector{MutationSite}}()
+    for s in sorted
+        push!(get!(buckets, s.relpath, MutationSite[]), s)
+    end
+
+    # Round-robin across buckets until we have n
+    result = MutationSite[]
+    bucket_indices = Dict(k => 1 for k in bucket_keys)
+    taken = 0
+    while taken < n
+        advanced = false
+        for k in bucket_keys
+            taken >= n && break
+            idx = bucket_indices[k]
+            bkt = buckets[k]
+            if idx <= length(bkt)
+                push!(result, bkt[idx])
+                bucket_indices[k] = idx + 1
+                taken += 1
+                advanced = true
+            end
+        end
+        advanced || break  # all buckets exhausted
+    end
+    return result
 end
 
 # ─── Internal helpers ─────────────────────────────────────────────────────────

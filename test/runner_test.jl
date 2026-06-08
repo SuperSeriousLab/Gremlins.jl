@@ -11,6 +11,15 @@ const FIXTURE_DIR = joinpath(@__DIR__, "fixtures", "MiniTarget")
 # Running a mutation suite spawns many julia subprocesses; reusing results
 # across tests avoids OOM from repeated baseline+subprocess launches.
 
+# Falsifiability fixtures must be deterministic regardless of machine load.
+# A cold mutant subprocess (precompile + test suite) can take 100s+ on a loaded
+# CI box; the derived timeout is load-sensitive (it scales with the measured
+# baseline) and can fall to the 10s floor when the baseline reads small, which
+# would falsely classify a genuinely killable mutant as `timeout`. Pin an
+# explicit, generous mutant_timeout so the outcome is decided by test semantics,
+# never by timing. This also dogfoods the M2.1 `mutant_timeout` override.
+const FIXTURE_MUTANT_TIMEOUT = 300.0
+
 # Run with OP_PLUS_TO_MINUS only: targets add() (killable) — fast (1 site)
 const M1_RESULT_PLUS = let
     mutate(FIXTURE_DIR;
@@ -18,7 +27,7 @@ const M1_RESULT_PLUS = let
         test_dir="test",
         test_file="runtests.jl",
         operators=[OP_PLUS_TO_MINUS],
-        timeout_multiplier=5.0,
+        mutant_timeout=FIXTURE_MUTANT_TIMEOUT,
         verbose=false)
 end
 
@@ -32,7 +41,7 @@ const M1_RESULT_GT = let
         test_dir="test",
         test_file="runtests.jl",
         operators=[OP_GT_TO_GE],
-        timeout_multiplier=5.0,
+        mutant_timeout=FIXTURE_MUTANT_TIMEOUT,
         verbose=false)
 end
 
