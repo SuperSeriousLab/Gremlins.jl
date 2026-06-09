@@ -39,6 +39,7 @@ struct ParsedArgs
     strong_threshold::Float64
     acceptable_threshold::Float64
     max_sites::Int              # 0 = no cap; >0 = take first N sites (deterministic)
+    indiff_ref::Union{String, Nothing}  # --in-diff <ref>: scope to diff vs this ref
 end
 
 """
@@ -55,6 +56,7 @@ function _parse_args(argv::Vector{String})::ParsedArgs
     strong = 0.80
     acceptable = 0.60
     max_sites = 0
+    indiff_ref = nothing
 
     i = 1
     while i <= length(argv)
@@ -96,6 +98,10 @@ function _parse_args(argv::Vector{String})::ParsedArgs
             v = tryparse(Int, argv[i])
             (v === nothing || v < 0) && throw(ArgumentError("--max-sites must be a non-negative integer"))
             max_sites = v
+        elseif arg == "--in-diff"
+            i += 1
+            i > length(argv) && throw(ArgumentError("--in-diff requires a value"))
+            indiff_ref = argv[i]
         elseif arg == "--help" || arg == "-h"
             _print_usage()
             exit(0)
@@ -108,7 +114,7 @@ function _parse_args(argv::Vector{String})::ParsedArgs
     isempty(pkg) && throw(ArgumentError("--pkg is required"))
     acceptable > strong && throw(ArgumentError("--acceptable must be <= --strong"))
 
-    return ParsedArgs(pkg, files, test_file, warm, json_out, strong, acceptable, max_sites)
+    return ParsedArgs(pkg, files, test_file, warm, json_out, strong, acceptable, max_sites, indiff_ref)
 end
 
 function _print_usage()
@@ -124,6 +130,10 @@ Options:
   --files a.jl,b.jl   Mutate ONLY sites whose relpath matches these file names
                        (comma-separated). Empty = all files. Use this to scope
                        CI runs to changed files.
+  --in-diff <ref>      Restrict mutation sites to lines added/changed relative
+                       to <ref> (e.g. HEAD~1, a commit SHA, or a branch name).
+                       Uses `git diff --unified=0`. A report line is printed to
+                       stderr: "scoped to diff <ref>: N of M sites (K suppressed)".
   --test-file <file>   Test entry point relative to test/ OR relative to pkg root
                        (default: runtests.jl, resolved as test/runtests.jl)
   --warm               Use warm-worker pool (5-6x faster, recommended)
@@ -303,6 +313,22 @@ function main(argv::Vector{String})
     catch e
         elog("ERROR: discovery failed: $e")
         exit(2)
+    end
+
+    # Apply --in-diff scope filter (before --files filter, after discovery)
+    if args.indiff_ref !== nothing
+        diff_lines = try
+            Gremlins.changed_lines(args.indiff_ref; pkgdir=pkgdir)
+        catch e
+            elog("ERROR: --in-diff failed: $e")
+            exit(2)
+        end
+        sites_all = sites
+        sites, n_suppressed = Gremlins.scope_to_diff(sites_all, diff_lines)
+        n = length(sites)
+        m = length(sites_all)
+        println(stderr, "scoped to diff $(args.indiff_ref): $n of $m discoverable sites ($n_suppressed suppressed)")
+        flush(stderr)
     end
 
     # Apply file filter
