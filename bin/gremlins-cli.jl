@@ -35,6 +35,7 @@ struct ParsedArgs
     files::Vector{String}       # empty = all files
     test_file::String
     warm::Bool
+    schema::Bool                # --schema: opt-in compile-once schema mode
     json_out::Union{String, Nothing}
     strong_threshold::Float64
     acceptable_threshold::Float64
@@ -52,6 +53,7 @@ function _parse_args(argv::Vector{String})::ParsedArgs
     files = String[]
     test_file = "runtests.jl"
     warm = false
+    schema = false
     json_out = nothing
     strong = 0.80
     acceptable = 0.60
@@ -76,6 +78,8 @@ function _parse_args(argv::Vector{String})::ParsedArgs
             test_file = argv[i]
         elseif arg == "--warm"
             warm = true
+        elseif arg == "--schema"
+            schema = true
         elseif arg == "--json"
             i += 1
             i > length(argv) && throw(ArgumentError("--json requires a value"))
@@ -113,8 +117,9 @@ function _parse_args(argv::Vector{String})::ParsedArgs
 
     isempty(pkg) && throw(ArgumentError("--pkg is required"))
     acceptable > strong && throw(ArgumentError("--acceptable must be <= --strong"))
+    (warm && schema) && throw(ArgumentError("--warm and --schema are mutually exclusive"))
 
-    return ParsedArgs(pkg, files, test_file, warm, json_out, strong, acceptable, max_sites, indiff_ref)
+    return ParsedArgs(pkg, files, test_file, warm, schema, json_out, strong, acceptable, max_sites, indiff_ref)
 end
 
 function _print_usage()
@@ -137,6 +142,9 @@ Options:
   --test-file <file>   Test entry point relative to test/ OR relative to pkg root
                        (default: runtests.jl, resolved as test/runtests.jl)
   --warm               Use warm-worker pool (5-6x faster, recommended)
+  --schema             Use compile-once schema mode for operator-swap sites
+                       (faster than warm on eligible-heavy files; ineligible sites
+                        fall back to warm automatically). Mutually exclusive with --warm.
   --json <out.json>    Write JSON report to this file
   --strong <float>     Kill-rate threshold for "strong" band (default: 0.80)
   --acceptable <float> Kill-rate threshold for "acceptable" band (default: 0.60)
@@ -375,7 +383,27 @@ function main(argv::Vector{String})
     elog("[gremlins] Baseline: $(round(baseline_elapsed, digits=2))s")
 
     # Run mutations
-    run_result = if args.warm
+    run_result = if args.schema
+        elog("[gremlins] Running schema (compile-once) mutation run...")
+        schema_result = try
+            Gremlins.run_mutations_schema(pkgdir, sites, cmap;
+                test_dir=test_dir,
+                test_file=test_file_bare,
+                baseline_elapsed=baseline_elapsed,
+                verbose=false)
+        catch e
+            elog("ERROR: schema run failed: $e")
+            exit(2)
+        end
+        Gremlins.print_schema_summary(schema_result)
+        # Report auto-disable if fired
+        if schema_result.auto_disabled
+            st = round(schema_result.agreement_schema_time, digits=3)
+            wt = round(schema_result.agreement_warm_time, digits=3)
+            elog("[gremlins] schema auto-disabled (hot path): schema=$(st)s warm=$(wt)s — ran all eligible on warm")
+        end
+        schema_result.run
+    elseif args.warm
         elog("[gremlins] Running warm-pool mutation run...")
         warm_result = try
             cache = Gremlins.load_cache(pkgdir)
