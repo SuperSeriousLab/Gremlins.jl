@@ -339,6 +339,14 @@ Confirmed node shapes (probed 2026-06-09):
 - `cond ? x : y` → `K"?"`, children `[cond, then, else]`.
 - `a .+ b` / `a .< b` → `K"dotcall"`, children `[a, op, b]` (op is operator Identifier leaf at index 2).
 
+**Multibyte hardening (atlas-flash plan review):** the replacers below index the
+node text by JuliaSyntax byte offsets (`full[lo:hi]`). For ASCII operators on
+ASCII operands this is codeunit-safe, but multibyte operands (e.g. `α < β < γ`)
+can throw `StringIndexError` if an offset lands mid-char. If any replacer throws,
+switch its extraction to `String(codeunits(full)[lo:hi])` (the pattern
+`discover.jl` already uses). Task B5 adds a multibyte regression test that
+exercises this path.
+
 ### Task B1: `OP_COMPARISON_CHAIN`
 
 **Files:**
@@ -604,6 +612,39 @@ git commit -m "feat(operators): OP_BROADCAST_DROP — de-vectorize infix dotted 
 <pasted test output>"
 ```
 
+### Task B5: Multibyte-source regression (atlas-flash hardening)
+
+**Files:**
+- Test: `test/test_idiom_operators.jl`
+
+- [ ] **Step 1: Write the test** (must pass once replacers are codeunit-safe)
+
+```julia
+@testset "operators on multibyte source" begin
+    # α/β/γ are 2-byte UTF-8 — byte offsets diverge from char indices here.
+    s = sites_for("h(α,β,γ) = α < β < γ\n"; ops=[Gremlins.OP_COMPARISON_CHAIN])
+    @test length(s) == 2
+    @test "α <= β < γ" in [x.replacement for x in s]
+    # ternary + broadcast on multibyte operands must not throw
+    @test !isempty(sites_for("t(λ,x,y)= λ ? x : y\n"; ops=[Gremlins.OP_TERNARY_SWAP]))
+    @test !isempty(sites_for("g(ψ,φ)= ψ .+ φ\n"; ops=[Gremlins.OP_BROADCAST_DROP]))
+end
+```
+
+- [ ] **Step 2: Run; if any replacer throws `StringIndexError`**, change its slice
+extractions from `full[lo:hi]` to `String(codeunits(full)[lo:hi])` (and operand
+offsets likewise). Re-run until green.
+
+Run: `julia --project -e 'using Pkg; Pkg.test()'`
+Expected: PASS.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add test/test_idiom_operators.jl src/operators.jl
+git commit -m "test(operators): multibyte-source regression; codeunit-safe splicing"
+```
+
 ### Task B4: Register operators + exports
 
 **Files:**
@@ -655,9 +696,25 @@ git commit -m "feat(operators): register comparison-chain/ternary/broadcast in D
 - Modify: `src/Gremlins.jl` — `include("schema.jl")` + exports.
 - Test: `test/test_schema.jl`.
 
-### Design recap (from spec, atlas-flash-tightened)
+### Design recap (from spec, atlas-flash-tightened — DESIGN + PLAN reviews)
 - Schema-eligible = **operator-swap ops only**: `:relop_lt_le`, `:relop_le_lt`, `:relop_gt_ge`, `:relop_ge_gt`, `:relop_eq_neq`, `:relop_neq_eq`, `:bool_and_or`, `:bool_or_and`, `:cmp_chain`. Value-mutating ops (literal/bool/const-pool/ternary) and shape-changing ops (stmt-delete/return-nothing/dispatch-swap/broadcast-drop) → warm fallback.
 - **Constant-literal guard:** reject a site whose original expression lowers to a constant `Literal` (reuses `equivalence.jl` lowered-IR pass) — closes the const-propagation/`Val`-dispatch hole atlas-flash flagged.
+- **Disjoint-only guard (atlas-flash PLAN review, bug 1):** operator-swap sites
+  *nest* — in `(a<b) && (c>d)` the `&&` site's byte-range contains both relop
+  sites. A flat byte-splice would corrupt offsets. v1 fix (YAGNI + sound): a site
+  is schema-run only if its byte-range is **disjoint** from every other eligible
+  site in the same function; any eligible site that contains or is contained by
+  another → warm fallback (`fallback_schema_ineligible`, taxonomy-visible).
+  `instrument_function` stays the simple flat right-to-left splice, now provably
+  disjoint (defensive assert). Structural tree-render of nested sites is deferred.
+- **World-age (atlas-flash PLAN review, bug 2):** instrumented functions are
+  eval'd **once** at setup (their invalidation propagates to callers on next
+  call). Per-mutant test execution **reuses the warm worker's fresh-include
+  primitive** — tests are include'd fresh each mutant, compiled in a world ≥ the
+  instrumentation world, so they call the instrumented methods and read
+  `__GREM_ACTIVE` at runtime. Schema does NOT compile tests once and re-invoke
+  (that would call stale methods). The C3 e2e test asserts a planted mutant is
+  actually **killed ≥ 1** — this fails loudly if world-age silently breaks.
 - Transform: site `EXPR` (id k local to file) → `(Main.__GREM_ACTIVE[] == k ? (MUT) : (EXPR))`. Module compiles once; flip `Main.__GREM_ACTIVE[]=k` per mutant.
 - **Soundness checks:** (1) schema baseline (`=0`) ≡ plain baseline else hard error; (2) warm-vs-schema agreement on `min(10,N)` sample, mismatch = hard error; (3) hot-path runtime auto-disable if schema test-time > warm test-time on the sample.
 
@@ -815,12 +872,20 @@ Expected: FAIL — `instrument_function` not defined.
     instrument_function(src, sites) -> String
 
 `sites :: Vector{Tuple{UnitRange{Int}, Int, String}}` — (byte_range, key, mutated_text)
-relative to `src` (1-based, non-overlapping). Returns `src` with each site's
-bytes replaced by `(Main.__GREM_ACTIVE[] == key ? (mutated) : (original))`.
-Splices right-to-left so offsets remain valid.
+relative to `src` (1-based). Ranges MUST be pairwise disjoint (the disjoint-only
+guard in `run_mutations_schema` enforces this; nested sites fall back to warm).
+Returns `src` with each site's bytes replaced by
+`(Main.__GREM_ACTIVE[] == key ? (mutated) : (original))`, splicing right-to-left
+so earlier offsets stay valid.
 """
 function instrument_function(src::AbstractString,
         sites::Vector{Tuple{UnitRange{Int},Int,String}})::String
+    # Defensive: disjointness is a precondition (atlas-flash bug 1). Verify.
+    ranges = sort([s[1] for s in sites]; by = first)
+    for i in 2:length(ranges)
+        first(ranges[i]) <= last(ranges[i-1]) &&
+            throw(MutationError("instrument_function: overlapping sites $(ranges[i-1]) / $(ranges[i]) — nested sites must route to warm fallback"))
+    end
     ordered = sort(sites; by = s -> first(s[1]), rev = true)
     buf = String(src)
     for (br, key, mut) in ordered
@@ -829,6 +894,26 @@ function instrument_function(src::AbstractString,
         buf = buf[1:first(br)-1] * guarded * buf[last(br)+1:end]
     end
     return buf
+end
+
+"""
+    disjoint_eligible(sites) -> (schema::Vector, nested::Vector)
+
+Partition eligible sites: a site is schema-runnable only if its byte-range is
+disjoint from every other eligible site in the SAME file. Containing/contained
+sites go to `nested` (→ warm fallback). O(n²) is fine — n is per-function small.
+"""
+function disjoint_eligible(sites::Vector{MutationSite})
+    schema = MutationSite[]; nested = MutationSite[]
+    for (i, s) in enumerate(sites)
+        overlaps = any(enumerate(sites)) do (j, t)
+            j != i && s.relpath == t.relpath &&
+                !(last(s.byte_range) < first(t.byte_range) ||
+                  last(t.byte_range) < first(s.byte_range))
+        end
+        push!(overlaps ? nested : schema, s)
+    end
+    return schema, nested
 end
 ```
 
@@ -854,11 +939,28 @@ Expected: PASS.
 end
 ```
 
+- [ ] **Step 6: Nested-sites partition test (atlas-flash bug 1)**
+
+```julia
+@testset "disjoint_eligible routes nested sites to warm" begin
+    # (a < b) && (c > d): the && site contains both relop sites → all nest
+    sites = filter(Gremlins.schema_eligible,
+                   sites_for("q(a,b,c,d) = (a < b) && (c > d)\n"))
+    schema, nested = Gremlins.disjoint_eligible(sites)
+    @test !isempty(nested)               # at least the && (or its children) fall back
+    # disjoint case: two independent comparisons → both schema-runnable
+    s2 = filter(Gremlins.schema_eligible,
+                sites_for("r(a,b,c,d) = (a < b, c > d)\n"))
+    sc2, ne2 = Gremlins.disjoint_eligible(s2)
+    @test isempty(ne2) && length(sc2) == 2
+end
+```
+
 Run + commit:
 
 ```bash
 git add src/schema.jl test/test_schema.jl
-git commit -m "feat(schema): instrument_function — multi-site guarded byte splice
+git commit -m "feat(schema): instrument_function (disjoint splice) + disjoint_eligible partition
 
 <pasted test output>"
 ```
@@ -879,12 +981,18 @@ Builds on the existing warm worker pattern (`worker_main.jl` `_extract_toplevel_
         # minimal package with one eligible site + a discriminating test
         # (full scaffold: Project.toml, src/Demo.jl with `gt(a,b)=a<b`, test/runtests.jl)
         # ... build via helper build_demo_pkg(dir) defined in test/test_schema.jl ...
+        # build_demo_pkg plants a KILLABLE mutant: src has `gt(a,b)=a<b` and the
+        # test asserts gt(1,2)==true && gt(2,2)==false (the `<`→`<=` mutant flips
+        # gt(2,2) → killed). This is the world-age falsifiability check.
         pkgdir = build_demo_pkg(dir)
         sites = filter(Gremlins.schema_eligible, Gremlins.discover(joinpath(pkgdir,"src")))
         cmap  = Gremlins.baseline_run(pkgdir)
         res   = Gremlins.run_mutations_schema(pkgdir, sites, cmap; pkg_name="Demo")
         @test res.killed + res.survived == length(sites)
         @test res.schema_ran >= 1                 # at least one ran in schema mode
+        @test res.killed >= 1                      # WORLD-AGE GUARD (atlas-flash bug 2):
+                                                   # if instrumented fn invisible to tests,
+                                                   # the planted mutant survives → this fails.
     end
 end
 ```
@@ -907,18 +1015,24 @@ function run_mutations_schema(
     pkg_name::Union{String,Nothing} = nothing,
     verbose::Bool = false,
 )::SchemaRunResult
-    # 1. Partition: eligible = filter(schema_eligible, sites); ineligible → warm.
-    # 2. Group eligible by (relpath, enclosing top-level function byte-range)
+    # 1. Partition: elig = filter(schema_eligible, sites).
+    #    schema_sites, nested = disjoint_eligible(elig)   # atlas-flash bug 1
+    #    warm_sites = (sites not in elig) ∪ nested        # all fall back to warm
+    # 2. Group schema_sites by (relpath, enclosing top-level function byte-range)
     #    using the JuliaSyntax tree (reuse worker_main.jl _extract_toplevel_at_byte
     #    to find each site's enclosing function node).
     # 3. For each function group: assign local keys 1..m, instrument_function(...),
-    #    eval the instrumented function once into the package module.
-    # 4. Soundness — schema baseline: set __GREM_ACTIVE[]=0, run tests once;
-    #    assert result == plain baseline (cmap baseline). Mismatch → throw MutationError.
-    # 5. Per site k: __GREM_ACTIVE[] = k; run covering tests (cmap[site.line]);
-    #    classify via the warm classifier (captured failing test = killed, I3);
-    #    reset __GREM_ACTIVE[] = 0.
-    # 6. Run the ineligible sites on the warm path; merge results.
+    #    eval the instrumented function ONCE into the package module (invalidation
+    #    propagates to callers on next call — atlas-flash bug 2).
+    # 4. Soundness — schema baseline: set __GREM_ACTIVE[]=0, run tests once via the
+    #    WARM WORKER'S FRESH-INCLUDE primitive; assert result == plain baseline
+    #    (cmap baseline). Mismatch → throw MutationError.
+    # 5. Per site k: __GREM_ACTIVE[] = k; run covering tests (cmap[site.line]) via
+    #    the SAME fresh-include primitive (tests compiled in a world ≥ instrument
+    #    world → call instrumented methods, read the Ref at runtime); classify via
+    #    the warm classifier (captured failing test = killed, I3); reset Ref = 0.
+    # 6. Run warm_sites on the warm path (run_mutations_warm); merge results.
+    #    nested/ineligible counted under fallback_schema_ineligible in taxonomy.
     # Returns SchemaRunResult{killed, survived, timeout, no_coverage,
     #   schema_ran, warm_fallback, taxonomy}.
 end
@@ -1017,8 +1131,8 @@ git commit -m "feat(schema): wire run path + report taxonomy + EDD benchmark gat
 ## Self-Review (against spec)
 
 - **A (git-diff scope):** A1 parse, A2 changed_lines+filter, A3 discover kwarg, A4 CLI+report-line. Covers spec §A incl. no-silent-caps report contract. ✓
-- **B (idiom operators):** B1 comparison-chain, B2 ternary-swap, B3 broadcast-drop, B4 register+exports+determinism. Each has a falsifiability test (campaign rule). Node kinds probe-verified. ✓
-- **C (schemata):** C1 enum+eligibility+const-literal guard, C2 instrument codegen, C3 group runner, C4 agreement+hot-path auto-disable, C5 wire+report+EDD gate. Covers spec §C incl. all three atlas-flash tightenings (operator-swap-only, constant-literal guard, hot-path auto-disable). ✓
+- **B (idiom operators):** B1 comparison-chain, B2 ternary-swap, B3 broadcast-drop, B5 multibyte regression, B4 register+exports+determinism. Each has a falsifiability test (campaign rule). Node kinds probe-verified. ✓
+- **C (schemata):** C1 enum+eligibility+const-literal guard, C2 instrument codegen+disjoint partition, C3 group runner, C4 agreement+hot-path auto-disable, C5 wire+report+EDD gate. Covers spec §C incl. the three DESIGN-review tightenings (operator-swap-only, constant-literal guard, hot-path auto-disable) AND the two HIGH PLAN-review fixes: disjoint-only scoping (nesting bug 1) and fresh-include + killed≥1 world-age guard (bug 2). ✓
 - **Invariants:** I2 (append operators, sites sorted), I3 (killed needs captured failing test — reuse warm classifier), I4 (discovery static), I1 (schema evals in-memory, warm property). New candidate I6 noted in C5. ✓
 - **Sequencing:** A → B → C; C gated on the second atlas-flash consult of THIS plan. A and B are independently mergeable.
 
