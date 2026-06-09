@@ -51,6 +51,17 @@ function node_text(node::JuliaSyntax.SyntaxNode, src::AbstractString)::String
     src[br]
 end
 
+"""
+Return `(full, nstart)` — the codeunit-safe text of `node` in `src` and the
+1-based codeunit start offset of the node within `src`.  Used by replacers that
+need to build sub-slices relative to the node's own byte range.
+"""
+function _node_codeunit_slice(node::JuliaSyntax.SyntaxNode, src::AbstractString)::Tuple{String,Int}
+    br = JuliaSyntax.byte_range(node)
+    full = String(codeunits(src)[br])
+    (full, first(br))
+end
+
 """Check whether a node is anywhere inside a macro definition or @eval/@generated."""
 function _is_inside_macro_def(node::JuliaSyntax.SyntaxNode)::Bool
     p = node.parent
@@ -442,9 +453,7 @@ const OP_COMPARISON_CHAIN = MutationOperator(
                    !JuliaSyntax.is_leaf(node) &&
                    !_is_inside_macro_def(node),
     (node, src) -> begin
-        br_node = JuliaSyntax.byte_range(node)
-        full = String(codeunits(src)[br_node])
-        nstart = first(br_node)
+        full, nstart = _node_codeunit_slice(node, src)
         cs = JuliaSyntax.children(node)
         outs = String[]
         # operators sit at even indices 2,4,...
@@ -479,12 +488,13 @@ const OP_TERNARY_SWAP = MutationOperator(
         cs = JuliaSyntax.children(node)
         (isnothing(cs) || length(cs) != 3) &&
             throw(MutationError("OP_TERNARY_SWAP: expected 3 children, got $(isnothing(cs) ? 0 : length(cs))"))
-        br_node = JuliaSyntax.byte_range(node)
-        full = String(codeunits(src)[br_node])
-        nstart = first(br_node)
-        tbr = JuliaSyntax.byte_range(cs[2]); ebr = JuliaSyntax.byte_range(cs[3])
-        ts = first(tbr) - nstart + 1; te = last(tbr) - nstart + 1
-        es = first(ebr) - nstart + 1; ee = last(ebr) - nstart + 1
+        full, nstart = _node_codeunit_slice(node, src)
+        tbr = JuliaSyntax.byte_range(cs[2])
+        ebr = JuliaSyntax.byte_range(cs[3])
+        ts = first(tbr) - nstart + 1
+        te = last(tbr)  - nstart + 1
+        es = first(ebr) - nstart + 1
+        ee = last(ebr)  - nstart + 1
         then_txt = String(codeunits(full)[ts:te])
         else_txt = String(codeunits(full)[es:ee])
         between  = String(codeunits(full)[te+1:es-1])   # the " : "
@@ -512,9 +522,7 @@ const OP_BROADCAST_DROP = MutationOperator(
         first(opbr) > 1 && codeunit(src, first(opbr) - 1) == UInt8('.')
     end,
     (node, src) -> begin
-        br_node = JuliaSyntax.byte_range(node)
-        full = String(codeunits(src)[br_node])
-        nstart = first(br_node)
+        full, nstart = _node_codeunit_slice(node, src)
         cs = JuliaSyntax.children(node)
         opbr = JuliaSyntax.byte_range(cs[2])
         dot_off = first(opbr) - 1 - nstart + 1   # 1-based codeunit offset of '.' in full
