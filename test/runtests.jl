@@ -687,3 +687,6 @@ include("test_diff_scope.jl")
 
 # ─── Feature B: Julia-idiom operators ────────────────────────────────────────
 include("test_idiom_operators.jl")
+
+# ─── Feature C: Mutant schemata (C1 + C2) ────────────────────────────────────
+include("test_schema.jl")

@@ -55,6 +55,7 @@ Values:
     fallback_const
     fallback_evalerr
     fallback_pollution
+    fallback_schema_ineligible
 end
 
 # ─── Warm eligibility ─────────────────────────────────────────────────────────

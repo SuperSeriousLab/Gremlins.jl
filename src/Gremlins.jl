@@ -7,6 +7,7 @@ using Base64
 include("operators.jl")
 include("equivalence.jl")
 include("discover.jl")
+include("schema.jl")
 include("diff_scope.jl")
 include("patch.jl")
 include("shadow.jl")
@@ -86,9 +87,15 @@ export cache_put!
 export cache_size
 export GREMLINS_VERSION
 
+# Mutant schemata (Feature C)
+export __GREM_ACTIVE
+export schema_eligible
+export instrument_function
+export disjoint_eligible
+
 # Warm-worker pool (M2)
 export FallbackReason
-export warm_ok, fallback_macro, fallback_typedef, fallback_const, fallback_evalerr, fallback_pollution
+export warm_ok, fallback_macro, fallback_typedef, fallback_const, fallback_evalerr, fallback_pollution, fallback_schema_ineligible
 export WarmEligibility
 export WarmMutantResult
 export WarmRunResult
