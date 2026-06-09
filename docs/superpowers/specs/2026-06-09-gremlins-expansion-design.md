@@ -104,9 +104,9 @@ these three fill genuinely Julia-idiomatic gaps generic tools miss.
 - Byte-range round-trip (apply→revert lossless, I-patcher contract).
 
 ### Schema interaction
-B1/B2 are expression-replacement ops → schema-eligible (Feature C). B3 changes
-call shape (`.` removal alters lowering) → schema-ineligible, runs on the warm
-path via fallback taxonomy.
+B2 (comparison-chain) is an operator-swap → schema-eligible (Feature C). B1
+(ternary-swap) replaces a sub-expression *value* and B3 (broadcast-drop) changes
+call shape → both schema-ineligible, run on the warm path via fallback taxonomy.
 
 ---
 
@@ -137,11 +137,19 @@ switch selecting which single mutant is "live".
   type is declared schema-ineligible and falls back (guard below).
 
 ### Eligibility & fallback (reuse, don't reinvent)
-- Eligible: relational, arithmetic, boolean, literal-boundary, const-pool,
-  comparison-chain, ternary-swap.
-- Ineligible (→ warm fallback): `OP_STMT_DELETE`, `OP_RETURN_NOTHING`,
-  `OP_DISPATCH_SWAP`, `OP_BROADCAST_DROP` — they change statement/arity/call
-  shape, not a same-type expression value.
+- Eligible — **operator-swap ops only**: relational, arithmetic, boolean
+  (`&&`/`||`), comparison-chain. These mutate the *operator token*, leaving
+  operands byte-identical, so they introduce no new constant and cannot change
+  constant-driven dispatch (the atlas-flash hole below).
+- Ineligible (→ warm fallback):
+  - *value-mutating ops* — `OP_INT_INCR`/`OP_INT_DECR` (literal-boundary),
+    `OP_TRUE_TO_FALSE`/`OP_FALSE_TO_TRUE`, `OP_CONST_POOL`, `OP_TERNARY_SWAP`.
+    They replace a sub-expression with a different *value*; under a dynamic
+    `Ref` read that value loses compile-time constness and can change which
+    method dispatches (`f(4)`→`f(::Val{4})` vs `f(::Int)`) even at `active==0`.
+    These run on the warm path where the real mutated value is compiled in.
+  - *shape-changing ops* — `OP_STMT_DELETE`, `OP_RETURN_NOTHING`,
+    `OP_DISPATCH_SWAP`, `OP_BROADCAST_DROP` — change statement/arity/call shape.
 - Add `fallback_schema_ineligible` to the existing `FallbackReason` enum so the
   report shows schema-run vs warm-run split exactly as it already shows warm-ok
   vs cold-fallback. Taxonomy stays visible, never silent.
@@ -164,6 +172,19 @@ switch selecting which single mutant is "live".
   common type via the existing lowered-IR machinery (`equivalence.jl`
   infrastructure); ambiguous → mark schema-ineligible (safe over-approximation,
   same one-directional soundness discipline as the equivalence prune).
+- **Constant-literal guard (atlas-flash):** reject any site whose original
+  expression lowers to a constant `Literal` — even an operator-swap site can have
+  literal operands that const-fold and feed `Val`-style dispatch. The
+  type-stability guard alone is necessary-not-sufficient: runtime types can match
+  while a lost constant changes the dispatched method. Literal-folding site →
+  warm fallback. Implemented with the same lowered-IR pass as the equivalence
+  prune (no new machinery).
+- **Hot-path runtime guard:** the warm-vs-schema agreement sample already runs the
+  same mutants both ways; record per-mutant *test wall-time* for the sample. If
+  schema test-time exceeds warm test-time (a dynamic `Ref` read inside a hot loop
+  blocks inlining/const-prop/LICM and can invert the compile-once win), schema is
+  net-negative for that file → auto-disable schema for the file, run it on the
+  warm path, and report the auto-disable. Never silently keep a slower mode.
 
 ### EDD gate
 Benchmark schema vs warm on the JUI dogfood package (same 25-site setup used for
@@ -171,12 +192,16 @@ the M2 ≥5× gate). Target: schema ≥2× faster than warm on eligible-heavy fi
 (recompile elimination), with I4 agreement = 0 mismatches, pasted output. No
 silent caps on what fell back.
 
-### Risk & open question (escalation)
-Schema's soundness model (type-stability guard, baseline-equivalence,
-instrumentation not perturbing inference/world-age) is the one non-trivial
-design surface here. Per the autopilot decision protocol, route the schema
-soundness model through **/consult or DORIANG** before locking the implementation
-plan. A/B carry no comparable risk and proceed directly.
+### Risk & consultation outcome
+Schema's soundness model is the one non-trivial design surface. Consulted
+atlas-flash (slr-atlas-flash) 2026-06-09. Key catch: same-type arms are
+necessary-not-sufficient — lost constant-propagation under a dynamic `Ref` read
+can change *which method dispatches* even when runtime type matches, and a `Ref`
+read in a hot loop can invert the speedup. Folded into the design as: (1)
+schema-eligible narrowed to operator-swap ops only; (2) constant-literal guard;
+(3) hot-path runtime auto-disable. atlas-flash confirmed ternary-at-site is the
+right primitive under the no-new-deps constraint (Cassette/IRTools rejected). The
+implementation plan will be consulted once more before C is built.
 
 ---
 
