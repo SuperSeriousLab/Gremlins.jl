@@ -46,6 +46,27 @@ never a misclassification.
 Implementation: JuliaSyntax tree walk — if any K"Identifier" leaf in a non-
 operator position is found, the expression references a variable and is NOT
 purely constant.
+
+KNOWN FALSE-ELIGIBLE HOLE (v1, acceptable): Named module-level constants
+(`pi`, `π`, `Inf`, `MY_CONST`, any SCREAMING_SNAKE global `const`) parse as
+plain K"Identifier" leaves — indistinguishable from runtime variable references
+at the AST level. Consequently, `pi < 2` or `MY_CONST < threshold` are
+incorrectly marked schema-eligible even though inference will const-fold them
+and schema instrumentation will be invisible.
+
+This is acceptable for v1 for two reasons:
+  (a) The direction is safe: the hole is false-eligible (extra sites may
+      enter the schema path), never false-ineligible (real variable sites
+      can never be silently skipped). The worst outcome is wasted schema
+      instrumentation, not a missed mutation.
+  (b) C4's warm-vs-schema agreement check is the runtime backstop: any
+      misclassified site whose schema result disagrees with the warm result
+      surfaces as a hard error, so no misclassification can silently corrupt
+      the survival report.
+
+A fix would require a type-inference or binding-analysis pass (out of scope
+for static discovery). Track as a known limitation; address in a future pass
+that annotates K"Identifier" leaves as constant vs. dynamic.
 """
 function _lowers_to_constant(expr_text::AbstractString)::Bool
     tree = try
