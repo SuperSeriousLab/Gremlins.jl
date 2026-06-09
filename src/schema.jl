@@ -229,59 +229,80 @@ function schema_warm_agreement(
     )
     warm_time = sum(r.elapsed for r in warm_res.run.results; init=0.0)
 
-    # ── Count mismatches ──────────────────────────────────────────────────────
-    # Build id → outcome maps for each path
-    schema_outcomes = Dict{String, MutantOutcome}(
-        r.site.id => r.outcome for r in schema_res.run.results
+    # ── Compare classifications + throw on disagreement ───────────────────────
+    # Delegated to the pure `_check_agreement` so the soundness backstop (the
+    # killed↔survived comparison AND the MutationError throw) is unit-testable
+    # with hand-constructed divergent results.
+    mismatches, both_ran, schema_time_both, warm_time_both =
+        _check_agreement(sample, schema_res.run.results, warm_res.run.results)
+
+    return AgreementResult(mismatches, schema_time, warm_time, length(sample),
+                           schema_time_both, warm_time_both, both_ran)
+end
+
+"""
+    _check_agreement(sample, schema_results, warm_results)
+        -> (mismatches, both_ran, schema_time_both, warm_time_both)
+
+Pure soundness comparator for `schema_warm_agreement`. Given a `sample` of sites
+and the per-site `MutantResult` vectors from the schema and warm runs, count the
+sites where BOTH paths produced a definitive outcome (`killed`/`survived`) and,
+among those, any `killed ↔ survived` disagreement.
+
+A disagreement is a soundness violation: schema mode misclassified a mutant
+relative to the trusted warm path. On ANY such mismatch this THROWS a
+`MutationError` (the hot backstop). `timeout`/`no_coverage`/`error` on either
+side are infrastructure uncertainties, not classification disagreements, and are
+ignored.
+
+Returns the mismatch count (always 0 on the non-throwing path), the count of
+comparable (`both_ran`) sites, and the summed schema/warm wall-time over that
+comparable subset (used by the hot-path auto-disable so a coverage-key mismatch
+— warm `no_coverage`, elapsed 0 — never spuriously triggers a disable).
+"""
+function _check_agreement(
+    sample::Vector{MutationSite},
+    schema_results::Vector{MutantResult},
+    warm_results::Vector{MutantResult},
+)::Tuple{Int, Int, Float64, Float64}
+    # id → (outcome, elapsed) maps, built ONCE for each path
+    schema_map = Dict{String, Tuple{MutantOutcome, Float64}}(
+        r.site.id => (r.outcome, r.elapsed) for r in schema_results
     )
-    warm_outcomes = Dict{String, MutantOutcome}(
-        r.site.id => r.outcome for r in warm_res.run.results
+    warm_map = Dict{String, Tuple{MutantOutcome, Float64}}(
+        r.site.id => (r.outcome, r.elapsed) for r in warm_results
     )
 
-    mismatch_ids = String[]
-    # Count of sites where BOTH paths produced a definitive outcome (killed/survived).
-    # Used to guard the hot-path comparison: if the warm path never ran (all no_coverage
-    # due to relpath key mismatch), warm_time=0 would spuriously trigger auto-disable.
-    both_ran = 0
+    mismatch_ids     = String[]
+    both_ran         = 0
     schema_time_both = 0.0
     warm_time_both   = 0.0
 
     for s in sample
-        so = get(schema_outcomes, s.id, nothing)
-        wo = get(warm_outcomes,   s.id, nothing)
-        (so === nothing || wo === nothing) && continue
-        # Only count killed ↔ survived disagreements — these are soundness violations.
-        # Timeout/no_coverage/error on either side are infrastructure uncertainties.
+        sv = get(schema_map, s.id, nothing)
+        wv = get(warm_map,   s.id, nothing)
+        (sv === nothing || wv === nothing) && continue
+        (so, se) = sv
+        (wo, we) = wv
+        # Only compare on definitive (killed/survived) outcomes on BOTH sides.
         if (so == killed || so == survived) && (wo == killed || wo == survived)
-            both_ran += 1
-            # Accumulate times for the "both paths ran" subset only — used by the
-            # hot-path auto-disable check so that a coverage-key mismatch (warm
-            # always returns no_coverage with elapsed=0) never spuriously triggers.
-            schema_time_both += get(Dict{String, Float64}(r.site.id => r.elapsed for r in schema_res.run.results), s.id, 0.0)
-            warm_time_both   += get(Dict{String, Float64}(r.site.id => r.elapsed for r in warm_res.run.results),   s.id, 0.0)
-            if so != wo
-                push!(mismatch_ids, s.id)
-            end
+            both_ran         += 1
+            schema_time_both += se
+            warm_time_both   += we
+            so != wo && push!(mismatch_ids, s.id)
         end
     end
-    mismatches = length(mismatch_ids)
 
-    if mismatches > 0
+    if !isempty(mismatch_ids)
         throw(MutationError(
-            "schema_warm_agreement: $mismatches classification mismatch(es) detected — " *
+            "schema_warm_agreement: $(length(mismatch_ids)) classification mismatch(es) detected — " *
             "schema result disagrees with warm result for sites: " *
-            join([id[1:min(8,length(id))] for id in mismatch_ids], ", ") *
+            join([id[1:min(8, length(id))] for id in mismatch_ids], ", ") *
             ". This is a soundness violation in _schema_instr_unit. " *
             "Schema mode is unsafe for this package; investigate before proceeding."))
     end
 
-    # For the timing fields in AgreementResult, use total summed times across all
-    # sample sites (not just "both ran") so callers can see total work done.
-    # The hot-path auto-disable in run_mutations_schema uses schema_time_both /
-    # warm_time_both (the "both ran" subset) to avoid spurious triggers from
-    # no_coverage path differences.
-    return AgreementResult(mismatches, schema_time, warm_time, length(sample),
-                           schema_time_both, warm_time_both, both_ran)
+    return (length(mismatch_ids), both_ran, schema_time_both, warm_time_both)
 end
 
 # ─── C3: run_mutations_schema (compile-once group runner) ────────────────────

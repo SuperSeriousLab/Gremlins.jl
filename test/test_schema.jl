@@ -173,6 +173,16 @@ end
         @test agree.schema_time > 0
         @test agree.warm_time  >= 0
         @test agree.sample_size == min(10, length(sites))
+        # NOTE (fixture limitation): these sites are discovered WITHOUT root=pkgdir,
+        # so their relpath ("Demo.jl") does NOT match the coverage key ("src/Demo.jl").
+        # The warm path therefore returns no_coverage on every sample site, so NO site
+        # is comparable here (both_ran == 0) and `mismatches == 0` above is vacuous on
+        # this fixture. The REAL killed↔survived comparison + throw is covered directly
+        # by the "_check_agreement: real kill↔survive divergence" testset. Production
+        # discovery uses root=pkgdir (runner.jl/warm.jl), where relpaths match and the
+        # backstop is live. Assert the no-op regime explicitly so it is visible, not hidden.
+        @test agree.both_ran == 0
+        @test agree.warm_time == 0.0   # all sample sites no_coverage on warm path
 
         # ── run_mutations_schema with agreement_check=true (guard active) ─────
         # Confirms that the end-to-end path with the guard active still produces
@@ -214,33 +224,70 @@ end
     end
 end
 
-@testset "schema_warm_agreement: mismatch throws MutationError" begin
-    # Direct injection of a discordant outcome pair is impractical without internal
-    # mocking (schema_warm_agreement calls the real runners). We instead test the
-    # GUARD CONTRACT at the structural level:
-    #   (a) The function returns AgreementResult with mismatches=0 when both paths agree.
-    #   (b) The error message contract: MutationError is thrown on mismatch.
-    #
-    # For (b) we verify the throw path indirectly: construct a dummy AgreementResult
-    # with mismatches > 0 and check that the caller (run_mutations_schema) would
-    # propagate it — but since run_mutations_schema calls schema_warm_agreement
-    # which only throws when mismatches > 0, and we cannot inject mismatches without
-    # mocking, we document this limitation and rely on:
-    #   1. The mismatches == 0 assertion in the agreement test above (soundness, happy path).
-    #   2. The error message structure in schema_warm_agreement (code review + audit).
-    #
-    # The only affordable injection point: pass a single site whose byte_range is
-    # deliberately invalid (points at byte 0) so _schema_instr_unit returns nothing
-    # → the site is warm-fallbacked in both runs, and both classify it as no_coverage
-    # → no mismatch (no throw). This confirms the guard does NOT fire on infrastructure
-    # errors, only on genuine kill↔survive disagreements.
+@testset "_check_agreement: real kill↔survive divergence throws MutationError" begin
+    # The soundness backstop is the killed↔survived comparison + throw inside
+    # `_check_agreement` (the pure comparator `schema_warm_agreement` delegates to).
+    # We exercise it directly with hand-constructed per-site MutantResult vectors so
+    # a GENUINE divergence is forced and the MutationError is confirmed to fire — no
+    # mocking of the runners required, and no reliance on the happy-path assertion.
+    mkres(id, outcome, elapsed) =
+        Gremlins.MutantResult(
+            Gremlins.MutationSite(id, "Demo.jl", 1:5, :relop_lt_le, "n", "a < b", "a <= b", 1),
+            outcome, elapsed, "")
+
+    site_a = Gremlins.MutationSite("site_aaaaaaaa", "Demo.jl", 1:5, :relop_lt_le, "n", "a < b", "a <= b", 1)
+    site_b = Gremlins.MutationSite("site_bbbbbbbb", "Demo.jl", 1:5, :relop_lt_le, "n", "c < d", "c <= d", 2)
+    sample = [site_a, site_b]
+
+    # (1) Both paths agree on both sites → no throw, mismatches == 0, both_ran == 2.
+    schema_ok = [mkres("site_aaaaaaaa", Gremlins.killed,   0.4),
+                 mkres("site_bbbbbbbb", Gremlins.survived, 0.5)]
+    warm_ok   = [mkres("site_aaaaaaaa", Gremlins.killed,   0.2),
+                 mkres("site_bbbbbbbb", Gremlins.survived, 0.3)]
+    mm, br, st, wt = Gremlins._check_agreement(sample, schema_ok, warm_ok)
+    @test mm == 0
+    @test br == 2
+    @test st ≈ 0.9      # schema elapsed over comparable subset (0.4 + 0.5)
+    @test wt ≈ 0.5      # warm elapsed   over comparable subset (0.2 + 0.3)
+
+    # (2) GENUINE divergence: site_a schema=killed, warm=survived → MUST throw.
+    schema_div = [mkres("site_aaaaaaaa", Gremlins.killed,   0.4),
+                  mkres("site_bbbbbbbb", Gremlins.survived, 0.5)]
+    warm_div   = [mkres("site_aaaaaaaa", Gremlins.survived, 0.2),   # disagrees!
+                  mkres("site_bbbbbbbb", Gremlins.survived, 0.3)]
+    err = @test_throws Gremlins.MutationError Gremlins._check_agreement(sample, schema_div, warm_div)
+    @test occursin("classification mismatch", err.value.msg)
+    @test occursin("soundness violation", err.value.msg)
+    @test occursin("site_aaa", err.value.msg)   # the offending site id is named
+
+    # (3) Infrastructure outcomes (no_coverage / timeout / error) are NOT mismatches:
+    # schema=killed but warm=no_coverage on the same site must NOT throw — only
+    # killed↔survived disagreements are soundness violations.
+    schema_infra = [mkres("site_aaaaaaaa", Gremlins.killed,       0.4)]
+    warm_infra   = [mkres("site_aaaaaaaa", Gremlins.no_coverage,  0.0)]
+    mm3, br3, _, _ = Gremlins._check_agreement([site_a], schema_infra, warm_infra)
+    @test mm3 == 0
+    @test br3 == 0      # not comparable → excluded from both_ran
+
+    # (4) Sites present on only one side (id missing from the other map) are skipped.
+    mm4, br4, _, _ = Gremlins._check_agreement(
+        [site_a, site_b],
+        [mkres("site_aaaaaaaa", Gremlins.killed, 0.4)],   # site_b absent on schema side
+        [mkres("site_aaaaaaaa", Gremlins.killed, 0.2),
+         mkres("site_bbbbbbbb", Gremlins.killed, 0.3)])
+    @test mm4 == 0
+    @test br4 == 1      # only site_a comparable
+end
+
+@testset "schema_warm_agreement: infrastructure outcomes do not fire the guard" begin
+    # End-to-end negative: a site whose byte_range falls back to warm/no_coverage on
+    # both paths must NOT throw — confirms the guard fires only on genuine
+    # killed↔survived disagreement, not on infrastructure differences.
     mktempdir() do dir
         pkgdir = build_demo_pkg(dir)
         belapsed, cmap = Gremlins.baseline_run(pkgdir)
-        # A site with byte_range 1:1 (byte 0 is invalid, will fall back to warm/no_coverage)
         fake_site = Gremlins.MutationSite("fake_id_00000001", "Demo.jl", 1:1,
                                           :relop_lt_le, "n", "a < b", "a <= b", 999)
-        # Should NOT throw (both paths get no_coverage or error, not killed↔survived)
         agree2 = Gremlins.schema_warm_agreement(pkgdir, [fake_site], cmap;
                                                 pkg_name="Demo", k=1)
         @test agree2.mismatches == 0   # no kill↔survive disagreement
