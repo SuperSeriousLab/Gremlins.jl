@@ -351,9 +351,13 @@ Fields:
 - `killed`/`survived`/`timeout`/`no_coverage`/`error` — outcome tallies (convenience)
 - `schema_ran`             — number of sites actually executed in schema (compile-once) mode
 - `warm_fallback`          — number of sites routed to the warm path (ineligible + nested)
-- `taxonomy`               — `Dict{FallbackReason,Int}`; schema-run sites = `warm_ok`,
-                             nested/ineligible = `fallback_schema_ineligible`, plus the
-                             merged warm taxonomy for warm-fallback sites
+- `taxonomy`               — `Dict{FallbackReason,Int}`; reason breakdown for ALL nsites.
+                             `warm_ok` = schema-ran sites + warm-path warm_ok sites combined.
+                             Other keys = warm-fallback cold-path reasons from the warm runner.
+                             Invariant: `sum(values(taxonomy)) == nsites` (no double-count).
+                             `schema_ran + warm_fallback == nsites` gives the schema/warm split.
+                             No double-count: warm-fallback sites appear only in their warm
+                             reason bucket, NOT separately under `fallback_schema_ineligible`.
 - `schema_results`         — per-site `WarmMutantResult` for the schema-run subset
 - `warm_result`            — the merged `WarmRunResult` for the warm-fallback subset (or `nothing`)
 - `auto_disabled`          — true if the agreement sample showed schema_time > warm_time
@@ -872,10 +876,22 @@ function run_mutations_schema(
         end
     end
 
-    # nested + ineligible (warm-fallback) counted under fallback_schema_ineligible
+    # ── C5.1 taxonomy fix ────────────────────────────────────────────────────
+    # `taxonomy` accumulated `warm_ok` tallies for schema-ran sites (via
+    # `_tally!(taxonomy, warm_ok)` above). We do NOT add a separate
+    # `fallback_schema_ineligible` counter here — doing so and then merging
+    # the warm taxonomy would double-count warm-fallback sites (once under
+    # `fallback_schema_ineligible` and once under their actual warm reason).
+    #
+    # Correct invariant after this function:
+    #   taxonomy[warm_ok]          == schema_ran          (schema-ran sites)
+    #   sum(warm_fallback_taxonomy) == n_warm_fallback     (reason breakdown)
+    #   sum(all taxonomy values)    == schema_ran + n_warm_fallback == nsites
+    #
+    # `fallback_schema_ineligible` appears in the warm taxonomy for sites that
+    # the warm worker also classifies as statically ineligible — it is NOT a
+    # separate "bucket" we add here.
     n_warm_fallback = length(warm_sites)
-    taxonomy[fallback_schema_ineligible] =
-        get(taxonomy, fallback_schema_ineligible, 0) + n_warm_fallback
 
     # ── Step 6: run warm_sites on the warm path; merge ────────────────────────
     warm_result = nothing
@@ -889,7 +905,8 @@ function run_mutations_schema(
             mutant_timeout=mutant_timeout,
             verbose=verbose, pkg_name=pkg_name, cache=nothing)
         append!(warm_mutant_results, warm_result.warm_results)
-        # Merge warm taxonomy (warm_ok + actual fallback reasons of warm-fallback sites)
+        # Merge warm taxonomy (warm_ok + actual fallback reasons of warm-fallback sites).
+        # This makes sum(taxonomy) = schema_ran + n_warm_fallback = nsites (no double-count).
         for (r, n) in warm_result.fallback_taxonomy
             taxonomy[r] = get(taxonomy, r, 0) + n
         end
