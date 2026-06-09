@@ -5,6 +5,23 @@
 
 using Test, Gremlins
 
+# stdout capture helper — redirect_stdout(::IOBuffer) is unsupported on Julia 1.11
+# (needs a real fd). Redirect to a temp file (real fd) and read it back.
+# Mirrors papercut_test.jl::_capture_stdout.
+function _capture_stdout_schema(f::Function)::String
+    path, io = mktemp()
+    try
+        redirect_stdout(io) do
+            f()
+        end
+        flush(io)
+        close(io)
+        return read(path, String)
+    finally
+        isfile(path) && rm(path; force=true)
+    end
+end
+
 @testset "schema_eligible" begin
     # MutationSite fields: id, relpath, byte_range, op_id, op_name, original, replacement, line
     mk(opid, orig) = Gremlins.MutationSite("i", "x.jl", 1:max(1,length(orig)),
@@ -333,11 +350,9 @@ end
                                             pkg_name="Demo",
                                             baseline_elapsed=belapsed,
                                             agreement_check=false)
-        buf = IOBuffer()
-        redirect_stdout(buf) do
+        out = _capture_stdout_schema() do
             Gremlins.print_schema_summary(res)
         end
-        out = String(take!(buf))
         @test occursin("schema-ran", out)
         @test occursin("warm-fallback", out)
         # auto-disable line absent when not fired
@@ -390,11 +405,9 @@ end
             2.345,  # agreement_schema_time
             1.234,  # agreement_warm_time
         )
-        buf = IOBuffer()
-        redirect_stdout(buf) do
+        out = _capture_stdout_schema() do
             Gremlins.print_schema_summary(fake)
         end
-        out = String(take!(buf))
         @test occursin("schema auto-disabled (hot path)", out)
         @test occursin("schema=2.345s", out)
         @test occursin("warm=1.234s", out)
