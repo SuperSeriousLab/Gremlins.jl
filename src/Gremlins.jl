@@ -7,6 +7,7 @@ using Base64
 include("operators.jl")
 include("equivalence.jl")
 include("discover.jl")
+include("diff_scope.jl")
 include("patch.jl")
 include("shadow.jl")
 include("coverage.jl")
@@ -40,6 +41,11 @@ export OP_DISPATCH_SWAP
 export discover
 export discover_file
 export mutant_id
+
+# Diff scope (Feature A)
+export parse_diff_hunks
+export changed_lines
+export scope_to_diff
 
 # Patching
 export apply

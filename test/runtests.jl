@@ -681,3 +681,6 @@ include("cli_test.jl")
 
 # ─── M2.1 papercut hardening tests ───────────────────────────────────────────
 include("papercut_test.jl")
+
+# ─── Feature A: git-diff scope tests ─────────────────────────────────────────
+include("test_diff_scope.jl")
