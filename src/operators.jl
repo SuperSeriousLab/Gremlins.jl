@@ -421,6 +421,107 @@ const OP_DISPATCH_SWAP = MutationOperator(
     end,
 )
 
+# ─── 10. Comparison-chain operator ───────────────────────────────────────────
+# `a < b < c` parses as K"comparison" with children [a, <, b, <, c]; the binary
+# relational ops (K"call") never reach it. Swap one comparator per mutant.
+# Multi-replacement: returns Vector{String} (one per operator position).
+#
+# Codeunit hardening: node text may contain multibyte operands (e.g. α < β < γ).
+# JuliaSyntax byte_range returns codeunit offsets; extract all substrings via
+# String(codeunits(full)[lo:hi]) to avoid StringIndexError.
+
+const _RELCHAIN_MAP = Dict{Symbol,String}(
+    :<   => "<=", :<= => "<", :>  => ">=", :>= => ">",
+    :(==) => "!=", :!= => "==",
+)
+
+const OP_COMPARISON_CHAIN = MutationOperator(
+    :cmp_chain,
+    "comparison-chain: swap one comparator",
+    (node, src) -> JuliaSyntax.kind(node) == JuliaSyntax.K"comparison" &&
+                   !JuliaSyntax.is_leaf(node) &&
+                   !_is_inside_macro_def(node),
+    (node, src) -> begin
+        br_node = JuliaSyntax.byte_range(node)
+        full = String(codeunits(src)[br_node])
+        nstart = first(br_node)
+        cs = JuliaSyntax.children(node)
+        outs = String[]
+        # operators sit at even indices 2,4,...
+        for i in 2:2:length(cs)-1
+            opnode = cs[i]
+            (JuliaSyntax.is_leaf(opnode) && opnode.val isa Symbol) || continue
+            to = get(_RELCHAIN_MAP, opnode.val, nothing)
+            to === nothing && continue
+            br = JuliaSyntax.byte_range(opnode)
+            lo = first(br) - nstart + 1
+            hi = last(br)  - nstart + 1
+            mut = String(codeunits(full)[1:lo-1]) * to * String(codeunits(full)[hi+1:end])
+            push!(outs, mut)
+        end
+        return outs            # Vector{String}: multi-replacement (distinct ids)
+    end,
+)
+
+# ─── 11. Ternary-swap operator ────────────────────────────────────────────────
+# `cond ? then : else` is K"?" with children [cond, then, else].
+# Swap the then/else byte spans, preserving cond / `?` / `:` / whitespace exactly.
+#
+# Codeunit hardening: same multibyte-safe extraction as comparison-chain above.
+
+const OP_TERNARY_SWAP = MutationOperator(
+    :ternary_swap,
+    "ternary: swap then/else",
+    (node, src) -> JuliaSyntax.kind(node) == JuliaSyntax.K"?" &&
+                   !JuliaSyntax.is_leaf(node) &&
+                   !_is_inside_macro_def(node),
+    (node, src) -> begin
+        cs = JuliaSyntax.children(node)
+        (isnothing(cs) || length(cs) != 3) &&
+            throw(MutationError("OP_TERNARY_SWAP: expected 3 children, got $(isnothing(cs) ? 0 : length(cs))"))
+        br_node = JuliaSyntax.byte_range(node)
+        full = String(codeunits(src)[br_node])
+        nstart = first(br_node)
+        tbr = JuliaSyntax.byte_range(cs[2]); ebr = JuliaSyntax.byte_range(cs[3])
+        ts = first(tbr) - nstart + 1; te = last(tbr) - nstart + 1
+        es = first(ebr) - nstart + 1; ee = last(ebr) - nstart + 1
+        then_txt = String(codeunits(full)[ts:te])
+        else_txt = String(codeunits(full)[es:ee])
+        between  = String(codeunits(full)[te+1:es-1])   # the " : "
+        return String(codeunits(full)[1:ts-1]) * else_txt * between * then_txt * String(codeunits(full)[ee+1:end])
+    end,
+)
+
+# ─── 12. Broadcast-drop operator ─────────────────────────────────────────────
+# De-vectorize an infix dotted operator: `a .+ b` → `a + b`, `a .< b` → `a < b`.
+# K"dotcall" with an operator Identifier leaf at child 2 (3-child form = infix).
+# The broadcasting `.` sits immediately before that operator in the source.
+# v1 scope: infix dotted operators only (prefix `f.(x)` has 2 children — excluded).
+
+const OP_BROADCAST_DROP = MutationOperator(
+    :broadcast_drop,
+    "broadcast: drop the . (de-vectorize)",
+    (node, src) -> begin
+        JuliaSyntax.kind(node) == JuliaSyntax.K"dotcall" || return false
+        _is_inside_macro_def(node) && return false
+        cs = JuliaSyntax.children(node)
+        (!isnothing(cs) && length(cs) == 3 &&
+         JuliaSyntax.is_leaf(cs[2]) && cs[2].val isa Symbol) || return false
+        # the operator's source text must be preceded by a '.' (infix dotted op)
+        opbr = JuliaSyntax.byte_range(cs[2])
+        first(opbr) > 1 && codeunit(src, first(opbr) - 1) == UInt8('.')
+    end,
+    (node, src) -> begin
+        br_node = JuliaSyntax.byte_range(node)
+        full = String(codeunits(src)[br_node])
+        nstart = first(br_node)
+        cs = JuliaSyntax.children(node)
+        opbr = JuliaSyntax.byte_range(cs[2])
+        dot_off = first(opbr) - 1 - nstart + 1   # 1-based codeunit offset of '.' in full
+        return String(codeunits(full)[1:dot_off-1]) * String(codeunits(full)[dot_off+1:end])
+    end,
+)
+
 # ─── Default operator set ──────────────────────────────────────────────────────
 
 """
@@ -448,4 +549,7 @@ const DEFAULT_OPERATORS = MutationOperator[
     OP_FALSE_TO_TRUE,
     OP_RETURN_NOTHING,
     OP_STMT_DELETE,
+    OP_COMPARISON_CHAIN,
+    OP_TERNARY_SWAP,
+    OP_BROADCAST_DROP,
 ]

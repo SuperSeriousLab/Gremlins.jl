@@ -684,3 +684,6 @@ include("papercut_test.jl")
 
 # ─── Feature A: git-diff scope tests ─────────────────────────────────────────
 include("test_diff_scope.jl")
+
+# ─── Feature B: Julia-idiom operators ────────────────────────────────────────
+include("test_idiom_operators.jl")
