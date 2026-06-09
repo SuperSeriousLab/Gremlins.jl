@@ -537,15 +537,35 @@ function run_mutations_schema(
 
                 # Re-instrument ALL surviving groups into the current worker.
                 # Used after a worker recycle (state contaminated by an errored mutant).
+                #
+                # FAIL-CLOSED GUARANTEE: returns `true` only if every group's
+                # instrument_function + _instrument_via_worker succeeds AND the
+                # key=0 baseline still passes. If any step fails we return `false`
+                # immediately — the caller MUST demote all remaining schema sites to
+                # warm rather than running them against an uninstrumented worker.
+                # This prevents a silent false-negative (survived) from an unguarded mutant.
                 reinstrument! = () -> begin
                     for (relpath, func_text, instr_sites, _gs) in ok_groups
                         ib = try
                             instrument_function(func_text, instr_sites)
                         catch
-                            continue
+                            verbose && println("[gremlins/schema] reinstrument!: instrument_function failed for $relpath → fail-closed")
+                            return false
                         end
-                        _instrument_via_worker(worker, "(schema@$relpath)", ib)
+                        ok2, ierr2 = _instrument_via_worker(worker, "(schema@$relpath)", ib)
+                        if !ok2
+                            verbose && println("[gremlins/schema] reinstrument!: worker instrument failed for $relpath: $ierr2 → fail-closed")
+                            return false
+                        end
                     end
+                    # Re-assert the key=0 baseline after reinstrument to confirm the
+                    # newly-instrumented worker is clean before running any more mutants.
+                    bout, _, berr, bok = _schema_run_via_worker(worker, 0, warm_test_path, derived_timeout)
+                    if !bok || bout != survived
+                        verbose && println("[gremlins/schema] reinstrument!: post-recycle baseline failed (ok=$bok, outcome=$bout, err=$berr) → fail-closed")
+                        return false
+                    end
+                    return true
                 end
 
                 # ── Step 4: schema baseline (key=0) must survive ───────────────
@@ -583,7 +603,14 @@ function run_mutations_schema(
                             append!(warm_sites, schema_runnable[si+1:end])
                             break
                         end
-                        reinstrument!()
+                        # reinstrument! is fail-closed: returns false if any group's
+                        # instrument or post-recycle baseline fails. Never continue
+                        # running schema mutants against an unverified worker.
+                        if !reinstrument!()
+                            verbose && println("[gremlins/schema] reinstrument! failed after recycle → demoting remaining sites to warm")
+                            append!(warm_sites, schema_runnable[si+1:end])
+                            break
+                        end
                         continue
                     end
                     base = MutantResult(s, outcome, elapsed, errmsg)
