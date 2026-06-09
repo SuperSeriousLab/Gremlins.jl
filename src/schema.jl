@@ -152,7 +152,172 @@ function disjoint_eligible(sites::Vector{MutationSite})
     return schema, nested
 end
 
+# ─── C4: AgreementResult + schema_warm_agreement + hot-path auto-disable ─────
+
+"""
+    schema_warm_agreement(pkgdir, sites, cmap;
+                          pkg_name=nothing,
+                          k=10,
+                          test_dir="test", test_file="runtests.jl",
+                          baseline_elapsed=nothing,
+                          mutant_timeout=nothing,
+                          verbose=false) -> AgreementResult
+
+Run the first `k` schema-ELIGIBLE + disjoint sites BOTH on the schema path AND
+the warm path. Assert identical kill/survive classification; count mismatches.
+Records summed test wall-time for each path.
+
+Uses `run_mutations_schema` (with `agreement_check=false` to avoid recursion) and
+`run_mutations_warm` on the k-site subset rather than reimplementing classification.
+
+Mismatch semantics: any site where schema classified killed and warm classified
+survived (or vice versa) increments `mismatches`. Timeout / no_coverage / error
+outcomes on either side are NOT counted as mismatches — they are infrastructure
+uncertainties, not classification disagreements.
+"""
+function schema_warm_agreement(
+    pkgdir::AbstractString,
+    sites::Vector{MutationSite},
+    cmap::CoverageMap;
+    pkg_name::Union{String, Nothing} = nothing,
+    k::Int = 10,
+    test_dir::AbstractString = "test",
+    test_file::AbstractString = "runtests.jl",
+    baseline_elapsed::Union{Float64, Nothing} = nothing,
+    mutant_timeout::Union{Float64, Nothing} = nothing,
+    verbose::Bool = false,
+)::AgreementResult
+    pkgdir = abspath(pkgdir)
+    isnothing(pkg_name) && (pkg_name = _infer_pkg_name(pkgdir))
+
+    # Pick the first k schema-eligible + disjoint sites (the exact subset that
+    # will run schema mode in the full run — sampling warm-fallback sites is pointless)
+    elig = filter(schema_eligible, sites)
+    schema_sites, _nested = disjoint_eligible(elig)
+    sample = schema_sites[1:min(k, length(schema_sites))]
+
+    if isempty(sample)
+        return AgreementResult(0, 0.0, 0.0, 0, 0.0, 0.0, 0)
+    end
+
+    # Establish baseline elapsed once (shared by both sub-runs)
+    if isnothing(baseline_elapsed)
+        baseline_elapsed, _ = baseline_run(pkgdir; test_dir=test_dir, test_file=test_file)
+    end
+
+    # ── Schema path on sample ─────────────────────────────────────────────────
+    schema_res = run_mutations_schema(
+        pkgdir, sample, cmap;
+        test_dir=test_dir, test_file=test_file,
+        baseline_elapsed=baseline_elapsed,
+        mutant_timeout=mutant_timeout,
+        pkg_name=pkg_name,
+        verbose=verbose,
+        agreement_check=false,   # no recursion
+    )
+    schema_time = sum(r.elapsed for r in schema_res.run.results; init=0.0)
+
+    # ── Warm path on same sample ──────────────────────────────────────────────
+    warm_res = run_mutations_warm(
+        pkgdir, sample, cmap;
+        test_dir=test_dir, test_file=test_file,
+        baseline_elapsed=baseline_elapsed,
+        mutant_timeout=mutant_timeout,
+        pkg_name=pkg_name,
+        verbose=verbose,
+        cache=nothing,
+    )
+    warm_time = sum(r.elapsed for r in warm_res.run.results; init=0.0)
+
+    # ── Count mismatches ──────────────────────────────────────────────────────
+    # Build id → outcome maps for each path
+    schema_outcomes = Dict{String, MutantOutcome}(
+        r.site.id => r.outcome for r in schema_res.run.results
+    )
+    warm_outcomes = Dict{String, MutantOutcome}(
+        r.site.id => r.outcome for r in warm_res.run.results
+    )
+
+    mismatch_ids = String[]
+    # Count of sites where BOTH paths produced a definitive outcome (killed/survived).
+    # Used to guard the hot-path comparison: if the warm path never ran (all no_coverage
+    # due to relpath key mismatch), warm_time=0 would spuriously trigger auto-disable.
+    both_ran = 0
+    schema_time_both = 0.0
+    warm_time_both   = 0.0
+
+    for s in sample
+        so = get(schema_outcomes, s.id, nothing)
+        wo = get(warm_outcomes,   s.id, nothing)
+        (so === nothing || wo === nothing) && continue
+        # Only count killed ↔ survived disagreements — these are soundness violations.
+        # Timeout/no_coverage/error on either side are infrastructure uncertainties.
+        if (so == killed || so == survived) && (wo == killed || wo == survived)
+            both_ran += 1
+            # Accumulate times for the "both paths ran" subset only — used by the
+            # hot-path auto-disable check so that a coverage-key mismatch (warm
+            # always returns no_coverage with elapsed=0) never spuriously triggers.
+            schema_time_both += get(Dict{String, Float64}(r.site.id => r.elapsed for r in schema_res.run.results), s.id, 0.0)
+            warm_time_both   += get(Dict{String, Float64}(r.site.id => r.elapsed for r in warm_res.run.results),   s.id, 0.0)
+            if so != wo
+                push!(mismatch_ids, s.id)
+            end
+        end
+    end
+    mismatches = length(mismatch_ids)
+
+    if mismatches > 0
+        throw(MutationError(
+            "schema_warm_agreement: $mismatches classification mismatch(es) detected — " *
+            "schema result disagrees with warm result for sites: " *
+            join([id[1:min(8,length(id))] for id in mismatch_ids], ", ") *
+            ". This is a soundness violation in _schema_instr_unit. " *
+            "Schema mode is unsafe for this package; investigate before proceeding."))
+    end
+
+    # For the timing fields in AgreementResult, use total summed times across all
+    # sample sites (not just "both ran") so callers can see total work done.
+    # The hot-path auto-disable in run_mutations_schema uses schema_time_both /
+    # warm_time_both (the "both ran" subset) to avoid spurious triggers from
+    # no_coverage path differences.
+    return AgreementResult(mismatches, schema_time, warm_time, length(sample),
+                           schema_time_both, warm_time_both, both_ran)
+end
+
 # ─── C3: run_mutations_schema (compile-once group runner) ────────────────────
+
+"""
+    AgreementResult
+
+Result of `schema_warm_agreement`: comparison of schema-mode vs warm-mode
+classifications on a sample of schema-eligible sites.
+
+Fields:
+- `mismatches`         — number of sites where schema and warm classified differently
+                         (killed ↔ survived; no_coverage/timeout/error not counted)
+- `schema_time`        — total summed test wall-time (seconds) for the schema path
+- `warm_time`          — total summed test wall-time (seconds) for the warm path
+- `sample_size`        — actual number of sites sampled (may be < k)
+- `schema_time_both`   — schema wall-time for the "both paths ran" subset (for hot-path comparison)
+- `warm_time_both`     — warm wall-time for the "both paths ran" subset
+- `both_ran`           — count of sites where BOTH paths produced killed/survived
+"""
+struct AgreementResult
+    mismatches::Int
+    schema_time::Float64
+    warm_time::Float64
+    sample_size::Int
+    schema_time_both::Float64
+    warm_time_both::Float64
+    both_ran::Int
+end
+
+function Base.show(io::IO, r::AgreementResult)
+    print(io, "AgreementResult(mismatches=$(r.mismatches), ",
+          "schema=$(round(r.schema_time, digits=3))s, ",
+          "warm=$(round(r.warm_time, digits=3))s, ",
+          "sample=$(r.sample_size), both_ran=$(r.both_ran))")
+end
 
 """
     SchemaRunResult
@@ -161,15 +326,19 @@ Complete result of a schema-mode mutation run. Mirrors `WarmRunResult` and adds
 schema-specific counters.
 
 Fields:
-- `run`               — base `RunResult` (all sites: schema + warm-fallback)
+- `run`                    — base `RunResult` (all sites: schema + warm-fallback)
 - `killed`/`survived`/`timeout`/`no_coverage`/`error` — outcome tallies (convenience)
-- `schema_ran`        — number of sites actually executed in schema (compile-once) mode
-- `warm_fallback`     — number of sites routed to the warm path (ineligible + nested)
-- `taxonomy`          — `Dict{FallbackReason,Int}`; schema-run sites = `warm_ok`,
-                        nested/ineligible = `fallback_schema_ineligible`, plus the
-                        merged warm taxonomy for warm-fallback sites
-- `schema_results`    — per-site `WarmMutantResult` for the schema-run subset
-- `warm_result`       — the merged `WarmRunResult` for the warm-fallback subset (or `nothing`)
+- `schema_ran`             — number of sites actually executed in schema (compile-once) mode
+- `warm_fallback`          — number of sites routed to the warm path (ineligible + nested)
+- `taxonomy`               — `Dict{FallbackReason,Int}`; schema-run sites = `warm_ok`,
+                             nested/ineligible = `fallback_schema_ineligible`, plus the
+                             merged warm taxonomy for warm-fallback sites
+- `schema_results`         — per-site `WarmMutantResult` for the schema-run subset
+- `warm_result`            — the merged `WarmRunResult` for the warm-fallback subset (or `nothing`)
+- `auto_disabled`          — true if the agreement sample showed schema_time > warm_time
+                             (hot-path auto-disable fired; all schema sites ran on warm path)
+- `agreement_schema_time`  — summed schema-path test time from the agreement sample (0.0 if skipped)
+- `agreement_warm_time`    — summed warm-path test time from the agreement sample (0.0 if skipped)
 """
 struct SchemaRunResult
     run::RunResult
@@ -183,12 +352,16 @@ struct SchemaRunResult
     taxonomy::Dict{FallbackReason, Int}
     schema_results::Vector{WarmMutantResult}
     warm_result::Union{WarmRunResult, Nothing}
+    auto_disabled::Bool
+    agreement_schema_time::Float64
+    agreement_warm_time::Float64
 end
 
 function Base.show(io::IO, r::SchemaRunResult)
+    ad_str = r.auto_disabled ? " [auto-disabled]" : ""
     print(io, "SchemaRunResult($(length(r.run.results)) mutants, ",
           "schema-ran=$(r.schema_ran), warm-fallback=$(r.warm_fallback), ",
-          "killed=$(r.killed), survived=$(r.survived))")
+          "killed=$(r.killed), survived=$(r.survived)$ad_str)")
 end
 
 """
@@ -367,7 +540,8 @@ end
                          baseline_elapsed=nothing,
                          timeout_multiplier=3.0, coverage_overhead=2.5,
                          mutant_timeout=nothing,
-                         pkg_name=nothing, verbose=false) -> SchemaRunResult
+                         pkg_name=nothing, verbose=false,
+                         agreement_check=true, agreement_k=10) -> SchemaRunResult
 
 Schema-mode (compile-once) mutation runner.
 
@@ -375,21 +549,30 @@ Protocol:
 1. Partition: `elig = filter(schema_eligible, sites)`;
    `(schema_sites, nested) = disjoint_eligible(elig)`;
    `warm_sites = sites ∖ schema_sites` (ineligible + nested → warm path).
-2. Group `schema_sites` by `(relpath, enclosing top-level function byte-range)`.
-3. Per function group: assign local keys 1..m, build the instrumented function
+2. Agreement sample (if `agreement_check=true`): run first `agreement_k` schema-eligible
+   sites BOTH ways (schema + warm). Any classification mismatch (killed ↔ survived) is a
+   hard `MutationError` — soundness violation. If schema_time > warm_time on the sample,
+   schema is net-negative for this package → auto-disable: route ALL eligible sites through
+   warm instead (logged + recorded in `SchemaRunResult.auto_disabled`).
+3. Group `schema_sites` by `(relpath, enclosing top-level function byte-range)`.
+4. Per function group: assign local keys 1..m, build the instrumented function
    body once via `instrument_function`, and `instrument` it ONCE into the package
    module via the warm worker (compile-once; invalidation propagates to callers).
-4. Schema baseline: `__GREM_ACTIVE[]=0`, run tests once via the worker's
+5. Schema baseline: `__GREM_ACTIVE[]=0`, run tests once via the worker's
    fresh-include primitive; must be `survived` (≡ plain baseline) else hard error.
-5. Per schema site: `__GREM_ACTIVE[]=key`, run covering tests fresh, classify
+6. Per schema site: `__GREM_ACTIVE[]=key`, run covering tests fresh, classify
    (captured failing test = killed, I3), reset Ref. World-age: tests compile in a
    world ≥ the instrument world, so they call the instrumented methods.
-6. Run `warm_sites` via `run_mutations_warm`; merge. nested/ineligible counted
+7. Run `warm_sites` via `run_mutations_warm`; merge. nested/ineligible counted
    under `fallback_schema_ineligible`.
 
 The compile-once property: `instrument_function` is eval'd ONCE per function group
-(step 3); steps 4-5 only flip a global Ref and re-include the tests — NO method
+(step 4); steps 5-6 only flip a global Ref and re-include the tests — NO method
 recompilation. This is what distinguishes schema mode from the warm path.
+
+`agreement_check=false` suppresses the soundness sample (used internally by
+`schema_warm_agreement` itself to avoid recursion, and by callers with tiny packages
+that have fewer sites than the sample size).
 """
 function run_mutations_schema(
     pkgdir::AbstractString,
@@ -403,6 +586,8 @@ function run_mutations_schema(
     mutant_timeout::Union{Float64, Nothing} = nothing,
     pkg_name::Union{String, Nothing} = nothing,
     verbose::Bool = false,
+    agreement_check::Bool = true,
+    agreement_k::Int = 10,
 )::SchemaRunResult
     pkgdir = abspath(pkgdir)
     isnothing(pkg_name) && (pkg_name = _infer_pkg_name(pkgdir))
@@ -420,8 +605,46 @@ function run_mutations_schema(
         max(COLD_START_TIMEOUT_FLOOR, est_plain * timeout_multiplier)
     end
 
+    # ── C4: Agreement sample + hot-path auto-disable ──────────────────────────
+    # Runs BEFORE partition so auto-disable can redirect the full eligible set.
+    auto_disabled          = false
+    agreement_schema_time  = 0.0
+    agreement_warm_time    = 0.0
+
+    if agreement_check
+        agree = schema_warm_agreement(
+            pkgdir, sites, cmap;
+            pkg_name=pkg_name, k=agreement_k,
+            test_dir=test_dir, test_file=test_file,
+            baseline_elapsed=baseline_elapsed,
+            mutant_timeout=mutant_timeout,
+            verbose=verbose,
+        )
+        agreement_schema_time = agree.schema_time
+        agreement_warm_time   = agree.warm_time
+
+        # Hot-path auto-disable: if schema is net-negative for this package,
+        # route ALL eligible sites through warm to avoid spending more time than
+        # the warm path for zero benefit.
+        #
+        # Compare only on the "both_ran" subset (sites where BOTH paths produced
+        # killed/survived). This prevents a spurious disable when the warm path
+        # returns no_coverage for all sample sites due to relpath key mismatch
+        # (warm_time=0 would otherwise always trigger the disable).
+        if agree.both_ran > 0 && agree.schema_time_both > agree.warm_time_both
+            auto_disabled = true
+            @warn("[gremlins/schema] schema auto-disabled (hot path): " *
+                  "schema=$(round(agree.schema_time_both, digits=3))s " *
+                  "warm=$(round(agree.warm_time_both, digits=3))s " *
+                  "on $(agree.both_ran)/$(agree.sample_size) comparable sites " *
+                  "— routing all eligible sites via warm path")
+            # Fall through to Step 1 with an empty elig: all sites → warm
+            # (achieved by routing everything to warm in Step 1 below via the flag)
+        end
+    end
+
     # ── Step 1: partition ─────────────────────────────────────────────────────
-    elig = filter(schema_eligible, sites)
+    elig = auto_disabled ? MutationSite[] : filter(schema_eligible, sites)
     schema_sites, nested = disjoint_eligible(elig)
     schema_id_set = Set(s.id for s in schema_sites)
     warm_sites = MutationSite[s for s in sites if !(s.id in schema_id_set)]
@@ -668,5 +891,6 @@ function run_mutations_schema(
         run_result, nk, ns, nt, nc, ne,
         schema_ran, n_warm_fallback, taxonomy,
         schema_results, warm_result,
+        auto_disabled, agreement_schema_time, agreement_warm_time,
     )
 end

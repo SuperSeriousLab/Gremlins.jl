@@ -94,6 +94,8 @@ export instrument_function
 export disjoint_eligible
 export run_mutations_schema
 export SchemaRunResult
+export AgreementResult
+export schema_warm_agreement
 
 # Warm-worker pool (M2)
 export FallbackReason
