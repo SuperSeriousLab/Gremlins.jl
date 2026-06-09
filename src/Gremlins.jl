@@ -36,6 +36,7 @@ export OP_RETURN_NOTHING
 export OP_STMT_DELETE
 export OP_CONST_POOL
 export OP_DISPATCH_SWAP
+export OP_COMPARISON_CHAIN, OP_TERNARY_SWAP, OP_BROADCAST_DROP
 
 # Discovery
 export discover
