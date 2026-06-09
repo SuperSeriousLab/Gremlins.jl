@@ -19,6 +19,7 @@ struct ParsedArgs_t
     files::Vector{String}
     test_file::String
     warm::Bool
+    schema::Bool
     json_out::Union{String, Nothing}
     strong_threshold::Float64
     acceptable_threshold::Float64
@@ -30,6 +31,7 @@ function _parse_args_t(argv::Vector{String})::ParsedArgs_t
     files = String[]
     test_file = "runtests.jl"
     warm = false
+    schema = false
     json_out = nothing
     strong = 0.80
     acceptable = 0.60
@@ -48,6 +50,8 @@ function _parse_args_t(argv::Vector{String})::ParsedArgs_t
             test_file = argv[i]
         elseif arg == "--warm"
             warm = true
+        elseif arg == "--schema"
+            schema = true
         elseif arg == "--json"
             i += 1; i > length(argv) && throw(ArgumentError("--json requires a value"))
             json_out = argv[i]
@@ -73,7 +77,8 @@ function _parse_args_t(argv::Vector{String})::ParsedArgs_t
     end
     isempty(pkg) && throw(ArgumentError("--pkg is required"))
     acceptable > strong && throw(ArgumentError("--acceptable must be <= --strong"))
-    ParsedArgs_t(pkg, files, test_file, warm, json_out, strong, acceptable, max_sites)
+    (warm && schema) && throw(ArgumentError("--warm and --schema are mutually exclusive"))
+    ParsedArgs_t(pkg, files, test_file, warm, schema, json_out, strong, acceptable, max_sites)
 end
 
 function classify_band_t(kill_rate::Float64, strong::Float64, acceptable::Float64)::Symbol
@@ -132,6 +137,31 @@ end
     @testset "--warm flag" begin
         a = _parse_args_t(["--pkg", "/p", "--warm"])
         @test a.warm == true
+        @test a.schema == false
+    end
+
+    @testset "--schema flag" begin
+        a = _parse_args_t(["--pkg", "/p", "--schema"])
+        @test a.schema == true
+        @test a.warm   == false
+    end
+
+    @testset "--schema composable with --max-sites + --files" begin
+        a = _parse_args_t(["--pkg", "/p", "--schema", "--max-sites", "8",
+                           "--files", "a.jl,b.jl"])
+        @test a.schema    == true
+        @test a.max_sites == 8
+        @test a.files     == ["a.jl", "b.jl"]
+    end
+
+    @testset "default: neither warm nor schema" begin
+        a = _parse_args_t(["--pkg", "/p"])
+        @test a.warm   == false
+        @test a.schema == false
+    end
+
+    @testset "error: --warm and --schema mutually exclusive" begin
+        @test_throws ArgumentError _parse_args_t(["--pkg", "/p", "--warm", "--schema"])
     end
 
     @testset "--files parses comma list" begin
