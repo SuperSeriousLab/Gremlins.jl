@@ -96,3 +96,55 @@ phases:
         #   src/style.jl:      FAIL  weak    kill_rate=0.10    killed=1/10  (capped first-40; style mutations not asserted)
         # Gate verdict: PASS — two JUI Julia chunks (auth.jl, token.jl) pass T4 via Gremlins.
         # style.jl FAIL is honest signal: TeleTUI style code not covered by smoke tests. Gap recorded.
+  - id: m4
+    name: "M4 Mutant schemata (compile-once mode, Feature C)"
+    status: in-progress
+    depends_on: [m3]
+    items:
+      - name: "C1: schema_eligible predicate + __GREM_ACTIVE Ref"
+        done: true
+        # 2026-06-09: schema_eligible, _lowers_to_constant, FallbackReason.fallback_schema_ineligible
+      - name: "C2: instrument_function + disjoint_eligible"
+        done: true
+        # 2026-06-09: instrument_function wraps each site in ternary, disjoint_eligible
+        # routes overlapping byte-ranges to warm fallback.
+      - name: "C3: run_mutations_schema end-to-end runner"
+        done: true
+        # 2026-06-09: compile-once schema runner. Groups sites by (relpath, func_range),
+        # instruments once per group, runs per-mutant by flipping __GREM_ACTIVE[].
+        # Warm-fallback for ineligible/nested sites. Agreement sample (C4) + auto-disable.
+      - name: "C4: schema_warm_agreement + hot-path auto-disable"
+        done: true
+        # 2026-06-09: _check_agreement soundness backstop (killed↔survived = hard error).
+        # Hot-path auto-disable: if schema_time > warm_time on agreement sample, route all
+        # eligible sites through warm path. both_ran guard prevents spurious disable.
+      - name: "C5.1: taxonomy double-count fix"
+        done: true
+        # 2026-06-09: Removed spurious fallback_schema_ineligible pre-assignment.
+        # Invariant: sum(taxonomy) == nsites (schema_ran + warm_fallback). No double-count.
+      - name: "C5.2: standardize discovery root (relpath/cmap-key consistency)"
+        done: true
+        # 2026-06-09: All schema tests use discover(src; root=pkgdir) so relpaths
+        # ("src/Demo.jl") match cmap keys. Agreement check is now non-vacuous (both_ran > 0).
+      - name: "C5.3: SchemaRunResult report (print_schema_summary + report_schema_markdown)"
+        done: true
+        # 2026-06-09: print_schema_summary shows schema/warm split + auto-disable line.
+        # report_schema_markdown emits Schema/Warm Split section + Fallback Reason Breakdown.
+      - name: "C5.4: CLI --schema flag"
+        done: true
+        # 2026-06-09: --schema routes to run_mutations_schema (default stays cold/warm).
+        # Mutually exclusive with --warm. Composable with --max-sites, --in-diff, --files.
+      - name: "C5.5: EDD BENCHMARK GATE — schema vs warm speedup"
+        done: false
+        # 2026-06-09: PARTIAL (honest). Box load avg ~22 (31+ competing Julia procs).
+        # Warm: 5 sites in 182.17s (36.4s/site, baseline 16.18s). Schema partitioned
+        # correctly (5 schema, 0 fallback, verbose confirmed). Could not complete both
+        # runs in single session — schema run started but overall 300s timeout expired.
+        # Coverage fix (C5.2) confirmed: cmap key "src/BenchPkg.jl" matches relpath.
+        # Ratio cannot be reported honestly under this contention. Deferred to lower-load run.
+        # NOTE: synthetic BenchPkg test used include()-based test loading which bypasses
+        # warm worker mutations — correct approach is using-based (TeleTUI gremlins_smoke.jl).
+        # To rerun: julia --project bin/gremlins-cli.jl --schema --max-sites 5 /path/to/pkg
+      - name: "C5.6: ROADMAP.yaml m4 phase + INVARIANTS.md I6"
+        done: true
+        # 2026-06-09: This entry + I6 (schema baseline ≡ plain baseline) added to INVARIANTS.md.

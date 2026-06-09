@@ -44,6 +44,29 @@ runs in a tmp copy of the package tree).
 Discovery on a 10kLOC package completes < 10 s (static parse only). Runner
 overhead per mutant (excluding test time) < 2 s on the warm path.
 
+### I6 — Schema baseline ≡ plain baseline or hard error
+The schema-instrumented baseline (`__GREM_ACTIVE[]=0`) must produce the same
+observable outcome as the un-instrumented plain baseline. If the instrumented
+function (with all mutation branches dormant) causes any test to fail that the
+plain baseline passes, `run_mutations_schema` throws `MutationError` immediately.
+
+**Why:** Schema instrumentation wraps expressions in ternaries:
+`__GREM_ACTIVE[] == k ? mut : orig`. With key=0, the `orig` branch fires and
+the function should be observationally identical to its un-instrumented form.
+Any divergence means the instrumentation itself changed behavior (e.g. side
+effects in the mutated expression, type instability changing dispatch). This
+is a correctness failure that must be surfaced loudly rather than silently
+producing false-survived results.
+
+**Implementation:** Step 4 of `run_mutations_schema` runs the test suite with
+`__GREM_ACTIVE[]=0` immediately after instrumenting each function group. Outcome
+must be `survived`. Any other outcome (killed, timeout, error) triggers the
+hard error — the affected schema sites are NOT silently demoted to warm.
+
+**Gold-benign:** a plain package with no instrumentation-visible side effects
+will always pass I6. Failure indicates a real instrumentation correctness problem
+requiring investigation (not a production incident to paper over).
+
 ## Adversarial surface
 - Malicious/weird source (Unicode identifiers, nested string macros, `quote`
   blocks) must not panic discovery — skip-with-note, never crash.
