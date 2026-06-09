@@ -73,3 +73,60 @@ function _lowers_to_constant(expr_text::AbstractString)::Bool
     # If no variable refs found → expression is purely constant → lowers to constant
     return !_has_variable_ref(tree)
 end
+
+# ─── C2: instrument_function + disjoint_eligible ─────────────────────────────
+
+"""
+    instrument_function(src, sites) -> String
+
+`sites :: Vector{Tuple{UnitRange{Int}, Int, String}}` — (byte_range, key, mutated_text)
+relative to `src` (1-based). Ranges MUST be pairwise disjoint (the disjoint-only
+guard in `disjoint_eligible` enforces this; nested sites fall back to warm).
+
+Returns `src` with each site's bytes replaced by
+`(Main.__GREM_ACTIVE[] == key ? (mutated) : (original))`, splicing right-to-left
+so earlier offsets stay valid.
+"""
+function instrument_function(src::AbstractString,
+        sites::Vector{Tuple{UnitRange{Int},Int,String}})::String
+    isempty(sites) && return String(src)
+    # Defensive: disjointness is a precondition (atlas-flash bug 1). Verify.
+    ranges = sort([s[1] for s in sites]; by = first)
+    for i in 2:length(ranges)
+        first(ranges[i]) <= last(ranges[i-1]) &&
+            throw(MutationError("instrument_function: overlapping sites $(ranges[i-1]) / $(ranges[i]) — nested sites must route to warm fallback"))
+    end
+    # Splice right-to-left so byte offsets of earlier sites remain valid
+    ordered = sort(sites; by = s -> first(s[1]), rev = true)
+    buf = String(src)
+    for (br, key, mut) in ordered
+        orig = String(codeunits(buf)[br])
+        guarded = "(Main.__GREM_ACTIVE[] == $key ? ($mut) : ($orig))"
+        buf = String(codeunits(buf)[1:first(br)-1]) * guarded * String(codeunits(buf)[last(br)+1:end])
+    end
+    return buf
+end
+
+"""
+    disjoint_eligible(sites) -> (schema::Vector{MutationSite}, nested::Vector{MutationSite})
+
+Partition eligible sites: a site is schema-runnable only if its byte-range is
+disjoint from every other eligible site in the collection. Containing/contained
+sites (byte-range overlap) go to `nested` (→ warm fallback).
+O(n²) — fine since n is per-function small.
+"""
+function disjoint_eligible(sites::Vector{MutationSite})
+    schema = MutationSite[]
+    nested = MutationSite[]
+    for (i, s) in enumerate(sites)
+        overlaps = any(enumerate(sites)) do (j, t)
+            j == i && return false
+            s.relpath == t.relpath || return false
+            # ranges overlap if they are NOT completely separated
+            !(last(s.byte_range) < first(t.byte_range) ||
+              last(t.byte_range) < first(s.byte_range))
+        end
+        push!(overlaps ? nested : schema, s)
+    end
+    return schema, nested
+end
