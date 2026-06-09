@@ -133,7 +133,7 @@ Options:
   --in-diff <ref>      Restrict mutation sites to lines added/changed relative
                        to <ref> (e.g. HEAD~1, a commit SHA, or a branch name).
                        Uses `git diff --unified=0`. A report line is printed to
-                       stderr: "scoped to diff <ref>: N of M sites (K suppressed)".
+                       stderr: "scoped to diff <ref>: N of M discoverable sites (K suppressed)".
   --test-file <file>   Test entry point relative to test/ OR relative to pkg root
                        (default: runtests.jl, resolved as test/runtests.jl)
   --warm               Use warm-worker pool (5-6x faster, recommended)
