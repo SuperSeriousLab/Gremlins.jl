@@ -245,6 +245,7 @@ function discover(
     operators::Vector{MutationOperator} = DEFAULT_OPERATORS,
     root::Union{AbstractString, Nothing} = nothing,
     prune_equivalent::Bool = false,
+    diff_lines::Union{Dict{String,Vector{UnitRange{Int}}}, Nothing} = nothing,
 )::Vector{MutationSite}
     if isfile(dir_or_file)
         r = isnothing(root) ? dirname(dir_or_file) : root
@@ -277,5 +278,8 @@ function discover(
     end
 
     sort!(all_sites, by = s -> (s.relpath, first(s.byte_range), string(s.op_id)))
+    if diff_lines !== nothing
+        all_sites, _suppressed = scope_to_diff(all_sites, diff_lines)
+    end
     return all_sites
 end
