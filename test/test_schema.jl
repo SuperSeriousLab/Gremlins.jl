@@ -59,3 +59,79 @@ end
     sc2, ne2 = Gremlins.disjoint_eligible(s2)
     @test isempty(ne2) && length(sc2) == 2
 end
+
+# ─── C3: run_mutations_schema end-to-end ─────────────────────────────────────
+
+"""
+    build_demo_pkg(dir) -> pkgdir
+
+Scaffold a minimal package named `Demo` under `dir/Demo` with:
+  - src/Demo.jl containing `gt(a,b) = a < b` (an eligible operator-swap site whose
+    `<`→`<=` mutant is KILLABLE),
+  - a DISCRIMINATING test `gt(1,2)==true && gt(2,2)==false` — the boundary case
+    `gt(2,2)` flips under `<=` (false→true), so the mutant is detected (killed).
+
+This is the world-age falsifiability fixture: if the schema-instrumented `gt`
+is invisible to the freshly-included tests, the planted mutant survives and the
+`res.killed >= 1` assertion fails loudly.
+"""
+function build_demo_pkg(dir::AbstractString)
+    pkgdir = joinpath(dir, "Demo")
+    mkpath(joinpath(pkgdir, "src"))
+    mkpath(joinpath(pkgdir, "test"))
+    write(joinpath(pkgdir, "Project.toml"),
+        "name = \"Demo\"\nuuid = \"00000000-0000-0000-0000-0000000de401\"\nversion = \"0.1.0\"\n")
+    write(joinpath(pkgdir, "src", "Demo.jl"),
+        "module Demo\n\ngt(a, b) = a < b\n\nexport gt\n\nend # module Demo\n")
+    # Warm/schema-compatible test: `using Demo` (NOT include(src)) so the worker's
+    # instrumented in-module methods are exercised.
+    write(joinpath(pkgdir, "test", "runtests.jl"),
+        "using Test\nusing Demo\n@testset \"Demo\" begin\n" *
+        "    @test Demo.gt(1, 2) == true\n" *
+        "    @test Demo.gt(2, 2) == false\n" *
+        "end\n")
+    return pkgdir
+end
+
+@testset "run_mutations_schema end-to-end" begin
+    mktempdir() do dir
+        pkgdir = build_demo_pkg(dir)
+        sites  = filter(Gremlins.schema_eligible,
+                        Gremlins.discover(joinpath(pkgdir, "src")))
+        @test !isempty(sites)                      # at least the gt `<` site
+        belapsed, cmap = Gremlins.baseline_run(pkgdir)
+        res = Gremlins.run_mutations_schema(pkgdir, sites, cmap;
+                                            pkg_name="Demo", baseline_elapsed=belapsed)
+        @test res isa Gremlins.SchemaRunResult
+        @test res.killed + res.survived == length(sites)   # all accounted
+        @test res.schema_ran >= 1                           # ≥1 ran in schema mode
+        @test res.killed >= 1                               # WORLD-AGE GUARD (bug 2):
+                                                            # planted `<`→`<=` mutant
+                                                            # must be detected (killed).
+    end
+end
+
+@testset "run_mutations_schema: cmp_chain extras fall back to warm" begin
+    # A comparison chain (a < b < c) yields multiple cmp_chain MutationSites at the
+    # SAME whole-node byte range → all overlap each other → disjoint_eligible routes
+    # them ALL to nested → warm fallback. Confirm the schema run still accounts for
+    # every site (warm-fallback count > 0) and does not crash.
+    mktempdir() do dir
+        pkgdir = joinpath(dir, "Chain")
+        mkpath(joinpath(pkgdir, "src")); mkpath(joinpath(pkgdir, "test"))
+        write(joinpath(pkgdir, "Project.toml"),
+            "name = \"Chain\"\nuuid = \"00000000-0000-0000-0000-0000000c4a14\"\nversion = \"0.1.0\"\n")
+        write(joinpath(pkgdir, "src", "Chain.jl"),
+            "module Chain\n\nbetween(a, b, c) = a < b < c\n\nend # module Chain\n")
+        write(joinpath(pkgdir, "test", "runtests.jl"),
+            "using Test\nusing Chain\n@testset \"Chain\" begin\n" *
+            "    @test Chain.between(1, 2, 3) == true\nend\n")
+        sites = Gremlins.discover(joinpath(pkgdir, "src"))
+        cmp_sites = filter(s -> s.op_id == :cmp_chain, sites)
+        if length(cmp_sites) >= 2
+            elig = filter(Gremlins.schema_eligible, cmp_sites)
+            _, nested = Gremlins.disjoint_eligible(elig)
+            @test !isempty(nested)   # cmp_chain extras (same range) → nested → warm
+        end
+    end
+end

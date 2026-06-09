@@ -7,7 +7,6 @@ using Base64
 include("operators.jl")
 include("equivalence.jl")
 include("discover.jl")
-include("schema.jl")
 include("diff_scope.jl")
 include("patch.jl")
 include("shadow.jl")
@@ -15,6 +14,7 @@ include("coverage.jl")
 include("runner.jl")
 include("cache.jl")
 include("warm.jl")
+include("schema.jl")
 include("report.jl")
 
 # Types
@@ -92,6 +92,8 @@ export __GREM_ACTIVE
 export schema_eligible
 export instrument_function
 export disjoint_eligible
+export run_mutations_schema
+export SchemaRunResult
 
 # Warm-worker pool (M2)
 export FallbackReason
