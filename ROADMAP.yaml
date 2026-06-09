@@ -136,15 +136,18 @@ phases:
         # Mutually exclusive with --warm. Composable with --max-sites, --in-diff, --files.
       - name: "C5.5: EDD BENCHMARK GATE — schema vs warm speedup"
         done: false
-        # 2026-06-09: PARTIAL (honest). Box load avg ~22 (31+ competing Julia procs).
-        # Warm: 5 sites in 182.17s (36.4s/site, baseline 16.18s). Schema partitioned
-        # correctly (5 schema, 0 fallback, verbose confirmed). Could not complete both
-        # runs in single session — schema run started but overall 300s timeout expired.
-        # Coverage fix (C5.2) confirmed: cmap key "src/BenchPkg.jl" matches relpath.
-        # Ratio cannot be reported honestly under this contention. Deferred to lower-load run.
-        # NOTE: synthetic BenchPkg test used include()-based test loading which bypasses
-        # warm worker mutations — correct approach is using-based (TeleTUI gremlins_smoke.jl).
-        # To rerun: julia --project bin/gremlins-cli.jl --schema --max-sites 5 /path/to/pkg
+        # 2026-06-09 (REVIEW RUN, real number): using-based BenchPkg, 6 sites, same set,
+        # load ~18-22. Both modes produced identical score (3 killed / 5 eligible, 60%).
+        #   schema: baseline 48.38s, mutation Runtime 81.78s  (schema-ran=1, warm-fallback=5)
+        #   warm:   baseline 47.47s, mutation Runtime 71.58s  (warm-executed=6)
+        #   ratio schema/warm = 81.78/71.58 = 1.14  → schema 14% SLOWER on this fixture.
+        # HONEST VERDICT: schema did NOT beat warm here. Cause: only 1/6 capped sites was
+        # disjoint-eligible operator-swap; 5 routed to warm fallback, so schema paid its
+        # instrument + schema-baseline setup cost and still ran 5/6 on the warm path. On an
+        # eligible-heavy file the compile-once win should appear; this small mixed fixture is
+        # adversarial to schema. Gate stays open until a real eligible-heavy speedup is shown.
+        # (Earlier 2026-06-09 attempt: include()-based BenchPkg bypassed warm worker mutations.)
+        # To rerun: julia --project bin/gremlins-cli.jl --schema --max-sites N /path/to/using-pkg
       - name: "C5.6: ROADMAP.yaml m4 phase + INVARIANTS.md I6"
         done: true
         # 2026-06-09: This entry + I6 (schema baseline ≡ plain baseline) added to INVARIANTS.md.
