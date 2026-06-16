@@ -98,7 +98,7 @@ phases:
         # style.jl FAIL is honest signal: TeleTUI style code not covered by smoke tests. Gap recorded.
   - id: m4
     name: "M4 Mutant schemata (compile-once mode, Feature C)"
-    status: in-progress
+    status: completed
     depends_on: [m3]
     items:
       - name: "C1: schema_eligible predicate + __GREM_ACTIVE Ref"
@@ -135,7 +135,24 @@ phases:
         # 2026-06-09: --schema routes to run_mutations_schema (default stays cold/warm).
         # Mutually exclusive with --warm. Composable with --max-sites, --in-diff, --files.
       - name: "C5.5: EDD BENCHMARK GATE — schema vs warm speedup"
-        done: false
+        done: true
+        # 2026-06-16 GATE PASS (eligible-heavy fixture): EligBench, 6 functions, each a
+        # block of 12 standalone relational comparisons (RHS of `+=`, no `&&` nesting →
+        # disjoint-schema-eligible; one statement per line → line-covered). Discovered 173
+        # sites, 72 disjoint-eligible. schema_warm_agreement ran ALL 72 BOTH paths on the
+        # SAME set (the clean apples-to-apples number, no warm-only dilution):
+        #   baseline        : 9.37s
+        #   schema_time     : 21.09s   (72 sites, compile-once per function)
+        #   warm_time       : 42.36s   (72 sites, re-eval function per mutant)
+        #   ratio schema/warm = 0.498  → schema 2.01x FASTER
+        #   mismatches      : 0 / 72   (I4 soundness backstop holds)
+        # VERDICT: hypothesis confirmed — compile-once schema beats warm when eligible
+        # sites dominate (72/72 here). The earlier 1.14x-SLOWER number stands too: it was
+        # a mixed 6-site fixture (1/6 eligible), where schema paid setup for ~no eligible
+        # work. Net: schema is a win iff a file is operator-swap-heavy; warm stays default,
+        # schema is opt-in (--schema), and C4 hot-path auto-disable protects the mixed case.
+        # Driver: /tmp/EligBench/bench_c55.jl (schema_warm_agreement, k=all-eligible).
+        # ── prior 2026-06-09 REVIEW RUN (mixed fixture, gate-opening evidence) kept below ──
         # 2026-06-09 (REVIEW RUN, real number): using-based BenchPkg, 6 sites, same set,
         # load ~18-22. Both modes produced identical score (3 killed / 5 eligible, 60%).
         #   schema: baseline 48.38s, mutation Runtime 81.78s  (schema-ran=1, warm-fallback=5)
