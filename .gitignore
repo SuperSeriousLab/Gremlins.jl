@@ -59,3 +59,12 @@ coverage.html
 # local-only anti-slop gate (internal ceresis, never published to GitHub)
 /ceresis/
 /.githooks/
+
+# Sisyphus generated artifacts (scripts/ + config.sh stay tracked)
+.sisyphus/.cache/
+.sisyphus/certified/
+.sisyphus/coverage.jsonl
+.sisyphus/dashboard.html
+.sisyphus/sweep-*.log
+# local merge-gate test logs
+.gremlins-*-test.log
