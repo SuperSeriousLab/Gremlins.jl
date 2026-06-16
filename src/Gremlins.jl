@@ -13,7 +13,11 @@ include("shadow.jl")
 include("coverage.jl")
 include("runner.jl")
 include("cache.jl")
+include("warm_eligibility.jl")   # FallbackReason, WarmEligibility (used by warm.jl + worker_pool.jl)
+include("worker_pool.jl")        # WorkerHandle + JSON-Lines transport
 include("warm.jl")
+include("schema_instrument.jl")  # instrument_function, disjoint_eligible, _schema_instr_unit
+include("schema_agreement.jl")   # AgreementResult, schema_warm_agreement, _check_agreement
 include("schema.jl")
 include("report.jl")
 
