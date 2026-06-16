@@ -50,8 +50,14 @@ end
 
 16-hex-char stable mutant identifier. Deterministic across machines.
 """
-function mutant_id(relpath::String, byte_range::UnitRange{Int}, op_id::Symbol)::String
+function mutant_id(relpath::String, byte_range::UnitRange{Int}, op_id::Symbol;
+                   replacement::AbstractString = "")::String
     payload = "$(relpath):$(first(byte_range))-$(last(byte_range)):$(op_id)"
+    # A single operator may emit several distinct replacements at one site
+    # (e.g. constant-pool swap). Fold the replacement text into the id ONLY when
+    # disambiguation is needed, so existing single-replacement ids — and the
+    # cache keyed on them — stay byte-stable.
+    isempty(replacement) || (payload *= ":→$(replacement)")
     bytes = sha256(payload)
     join(string(b, base=16, pad=2) for b in bytes[1:8])
 end
@@ -86,6 +92,7 @@ function _walk!(
     src::String,
     relpath::String,
     operators::Vector{MutationOperator},
+    prune_equivalent::Bool = false,
 )
     for op in operators
         matched = false
@@ -116,17 +123,21 @@ function _walk!(
             catch
                 continue
             end
-            replacement = ""
-            try
-                replacement = op.replacer(node, src)
+
+            # An operator may emit a single replacement (String) or several
+            # (Vector{String}, e.g. constant-pool swap). Normalize to a vector;
+            # `multi` decides whether the replacement text must disambiguate the
+            # mutant id (see mutant_id).
+            replacements = try
+                r = op.replacer(node, src)
+                r isa AbstractString ? String[String(r)] : collect(String, r)
             catch
-                continue
+                String[]
             end
+            isempty(replacements) && continue
+            multi = length(replacements) > 1
 
-            # Skip identity mutations
-            replacement == original && continue
-
-            # Source line
+            # Source line (shared by all replacements at this node)
             ln = 1
             try
                 sf = JuliaSyntax.sourcefile(node)
@@ -136,17 +147,32 @@ function _walk!(
             catch
             end
 
-            site = MutationSite(
-                mutant_id(relpath, UnitRange{Int}(br_clamped), op.id),
-                relpath,
-                UnitRange{Int}(br_clamped),
-                op.id,
-                op.name,
-                original,
-                replacement,
-                ln,
-            )
-            push!(sites, site)
+            for replacement in replacements
+                # Skip identity mutations
+                replacement == original && continue
+
+                # Opt-in soundness prune: drop mutants whose lowered IR is
+                # byte-identical to the original (provably equivalent). One-
+                # directional — any uncertainty keeps the mutant, so a real
+                # survivor can never be hidden. See equivalence.jl.
+                if prune_equivalent &&
+                   _is_lowering_equivalent(node, br_clamped, replacement, src)
+                    continue
+                end
+
+                site = MutationSite(
+                    mutant_id(relpath, UnitRange{Int}(br_clamped), op.id;
+                              replacement = multi ? replacement : ""),
+                    relpath,
+                    UnitRange{Int}(br_clamped),
+                    op.id,
+                    op.name,
+                    original,
+                    replacement,
+                    ln,
+                )
+                push!(sites, site)
+            end
         end
     end
 
@@ -154,7 +180,7 @@ function _walk!(
     cs = JuliaSyntax.children(node)
     if !isnothing(cs)
         for child in cs
-            _walk!(sites, child, src, relpath, operators)
+            _walk!(sites, child, src, relpath, operators, prune_equivalent)
         end
     end
 end
@@ -171,6 +197,7 @@ function discover_file(
     path::AbstractString;
     root::AbstractString = dirname(path),
     operators::Vector{MutationOperator} = DEFAULT_OPERATORS,
+    prune_equivalent::Bool = false,
 )::Vector{MutationSite}
     src = try
         read(path, String)
@@ -199,7 +226,7 @@ function discover_file(
     end
 
     sites = MutationSite[]
-    _walk!(sites, tree, src, relpath, operators)
+    _walk!(sites, tree, src, relpath, operators, prune_equivalent)
     sort!(sites, by = s -> (first(s.byte_range), string(s.op_id)))
     return sites
 end
@@ -217,10 +244,13 @@ function discover(
     dir_or_file::AbstractString;
     operators::Vector{MutationOperator} = DEFAULT_OPERATORS,
     root::Union{AbstractString, Nothing} = nothing,
+    prune_equivalent::Bool = false,
+    diff_lines::Union{Dict{String,Vector{UnitRange{Int}}}, Nothing} = nothing,
 )::Vector{MutationSite}
     if isfile(dir_or_file)
         r = isnothing(root) ? dirname(dir_or_file) : root
-        return discover_file(dir_or_file; root = r, operators = operators)
+        return discover_file(dir_or_file; root = r, operators = operators,
+                             prune_equivalent = prune_equivalent)
     end
 
     isdir(dir_or_file) || throw(MutationError("'$dir_or_file' is neither a file nor a directory"))
@@ -242,10 +272,14 @@ function discover(
     sort!(jl_files)
 
     for fpath in jl_files
-        sites = discover_file(fpath; root = relpath_root, operators = operators)
+        sites = discover_file(fpath; root = relpath_root, operators = operators,
+                             prune_equivalent = prune_equivalent)
         append!(all_sites, sites)
     end
 
     sort!(all_sites, by = s -> (s.relpath, first(s.byte_range), string(s.op_id)))
+    if diff_lines !== nothing
+        all_sites, _suppressed = scope_to_diff(all_sites, diff_lines)
+    end
     return all_sites
 end

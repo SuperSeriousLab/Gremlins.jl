@@ -28,6 +28,16 @@ pkg_dir="$(dirname "$abs")"
 failures=()
 ran=0
 
+# Language guard: every tool in this tier (go vet / gocyclo / ineffassign /
+# staticcheck) is Go-only. On a non-Go chunk `go vet ./dir/...` errors ("no Go
+# files") and would spuriously FAIL the tier, gating out T3/T4. Soft-pass non-Go
+# chunks — the language-agnostic tiers (size, spec, mutation, adversarial) carry
+# the certification. (Julia static linting is out of scope for this harness.)
+case "$path" in
+  *.go) ;;
+  *) printf 'PASS\tt2-tools\ttools=skipped (non-Go chunk: %s)\n' "$path"; exit 0;;
+esac
+
 # go vet — always present with the Go toolchain.
 if command -v go >/dev/null 2>&1; then
   ran=$((ran+1))

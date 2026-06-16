@@ -520,6 +520,89 @@ end
     @test f_mutant(3) != 8    # one stmt deleted, result changes
 end
 
+@testset "Falsifiability — literal_const_pool (killable)" begin
+    # Constant-pool swap replaces a literal with another literal already present
+    # in the same function (here {7, 3}) — an in-domain substitution. Distinct
+    # literal values keep each (original, replacement) pair unambiguous.
+    src = """
+    function fpick(flag)
+        base = 7
+        return flag ? base : 3
+    end
+    """
+    sites = sites_for_op(src, OP_CONST_POOL)
+    @test !isempty(sites)
+    # One mutant per (literal, distinct sibling value). Ids must be distinct
+    # even where byte-range + op-id collide (same literal, different target).
+    @test length(unique(s -> s.id, sites)) == length(sites)
+    # `base = 7` → `base = 3`: fpick(true) returns 3 instead of 7 → killed.
+    swap = first(s for s in sites if s.original == "7" && s.replacement == "3")
+    mutated  = apply(swap, src)
+    f_orig   = _eval_in_fresh_module(src,     :fpick)
+    f_mutant = _eval_in_fresh_module(mutated, :fpick)
+    @test f_orig(true)   == 7
+    @test f_mutant(true) == 3   # mutation caught
+    # Round-trip safety for every emitted mutant.
+    @testset "const-pool round-trips" begin
+        for s in sites
+            @test revert(s, apply(s, src)) == src
+        end
+    end
+end
+
+@testset "Falsifiability — dispatch_type_swap (killable)" begin
+    # Julia-unique: a parameter's type annotation IS the dispatch contract.
+    # Swapping `::Int` → `::String` makes inc(2) fail to dispatch → MethodError
+    # → any test calling inc(::Int) fails → killed. Survives only if the Int
+    # contract is never exercised (a real dispatch-coverage gap).
+    src = """
+    function inc(x::Int)
+        return x + 1
+    end
+    """
+    sites = sites_for_op(src, OP_DISPATCH_SWAP)
+    @test !isempty(sites)
+    site = sites[1]
+    @test site.original    == "x::Int"
+    @test site.replacement == "x::String"
+    mutated = apply(site, src)
+    @test revert(site, mutated) == src
+    f_orig = _eval_in_fresh_module(src,     :inc)
+    f_mut  = _eval_in_fresh_module(mutated, :inc)
+    @test f_orig(2) == 3
+    @test_throws MethodError f_mut(2)   # dispatch broken → mutation caught
+end
+
+@testset "Equivalence prune — sound + one-directional" begin
+    # A pure-value statement (`1`) that lowering already elides: deleting it is
+    # PROVABLY equivalent, so prune_equivalent must drop it.
+    eqsrc = """
+    function geq(x)
+        1
+        return x
+    end
+    """
+    eqp = mktempdir() do dir
+        path = joinpath(dir, "eq.jl"); write(path, eqsrc)
+        off = discover_file(path; root=dir, operators=[OP_STMT_DELETE], prune_equivalent=false)
+        on  = discover_file(path; root=dir, operators=[OP_STMT_DELETE], prune_equivalent=true)
+        (length(off), length(on))
+    end
+    @test eqp[1] == 1   # the dead-value statement is a delete site
+    @test eqp[2] == 0   # ...and it is pruned as equivalent
+
+    # A killable relop mutant must NEVER be pruned (one-directional: a real
+    # survivor can never be hidden).
+    ksrc = "function hk(x)\n    return x < 5\nend\n"
+    kp = mktempdir() do dir
+        path = joinpath(dir, "k.jl"); write(path, ksrc)
+        off = discover_file(path; root=dir, operators=[OP_LT_TO_LE], prune_equivalent=false)
+        on  = discover_file(path; root=dir, operators=[OP_LT_TO_LE], prune_equivalent=true)
+        (length(off), length(on))
+    end
+    @test kp[1] == kp[2] == 1   # killable mutant survives the prune
+end
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # SELF-MUTATE SMOKE TEST
 # EDD GATE: discover on Gremlins own src/ must find >50 sites total.
@@ -598,3 +681,12 @@ include("cli_test.jl")
 
 # ─── M2.1 papercut hardening tests ───────────────────────────────────────────
 include("papercut_test.jl")
+
+# ─── Feature A: git-diff scope tests ─────────────────────────────────────────
+include("test_diff_scope.jl")
+
+# ─── Feature B: Julia-idiom operators ────────────────────────────────────────
+include("test_idiom_operators.jl")
+
+# ─── Feature C: Mutant schemata (C1 + C2) ────────────────────────────────────
+include("test_schema.jl")

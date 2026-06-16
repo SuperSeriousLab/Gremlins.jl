@@ -51,6 +51,17 @@ function node_text(node::JuliaSyntax.SyntaxNode, src::AbstractString)::String
     src[br]
 end
 
+"""
+Return `(full, nstart)` — the codeunit-safe text of `node` in `src` and the
+1-based codeunit start offset of the node within `src`.  Used by replacers that
+need to build sub-slices relative to the node's own byte range.
+"""
+function _node_codeunit_slice(node::JuliaSyntax.SyntaxNode, src::AbstractString)::Tuple{String,Int}
+    br = JuliaSyntax.byte_range(node)
+    full = String(codeunits(src)[br])
+    (full, first(br))
+end
+
 """Check whether a node is anywhere inside a macro definition or @eval/@generated."""
 function _is_inside_macro_def(node::JuliaSyntax.SyntaxNode)::Bool
     p = node.parent
@@ -294,6 +305,231 @@ const OP_STMT_DELETE = MutationOperator(
     (node, src) -> "",
 )
 
+# ─── 8. Constant-pool / homologous literal swap ──────────────────────────────
+# Replace an integer literal with another DISTINCT integer literal already
+# present in the same enclosing function scope (e.g. 0 ↔ 1, n-bound ↔ 2). These
+# are *in-domain* substitutions — the swapped value is one the author actually
+# used nearby — so a surviving mutant is damning: the suite cannot tell two of
+# the function's own constants apart. One mutant is emitted per distinct sibling
+# value (the replacer returns a Vector{String}; discover.jl fans it out).
+#
+# Generalizes to homologous identifier pairs (firstindex↔lastindex, first↔last)
+# via the same Vector-returning replacer — left as a follow-on; this spike ships
+# the canonical integer-literal pool. NOT in DEFAULT_OPERATORS yet (opt-in via
+# `operators=[OP_CONST_POOL]`) to avoid perturbing the v1 default site counts.
+
+"""Walk up to the nearest enclosing function-definition node, or `nothing`."""
+function _enclosing_func(node::JuliaSyntax.SyntaxNode)
+    p = node.parent
+    while !isnothing(p)
+        k = JuliaSyntax.kind(p)
+        if k == JuliaSyntax.K"function"
+            return p
+        elseif k == JuliaSyntax.K"="
+            # Short-form function `f(x) = ...`: lhs (first child) is a call.
+            cs = JuliaSyntax.children(p)
+            if !isnothing(cs) && !isempty(cs) &&
+               JuliaSyntax.kind(cs[1]) == JuliaSyntax.K"call"
+                return p
+            end
+        end
+        p = p.parent
+    end
+    return nothing
+end
+
+"""Collect every Integer-literal value under `node` (depth-first) into `acc`."""
+function _collect_int_literals!(acc::Vector{Int}, node::JuliaSyntax.SyntaxNode)
+    if JuliaSyntax.is_leaf(node) &&
+       JuliaSyntax.kind(node) == JuliaSyntax.K"Integer" &&
+       node.val isa Integer
+        push!(acc, Int(node.val))
+    end
+    cs = JuliaSyntax.children(node)
+    if !isnothing(cs)
+        for c in cs
+            _collect_int_literals!(acc, c)
+        end
+    end
+    return acc
+end
+
+const OP_CONST_POOL = MutationOperator(
+    :literal_const_pool,
+    "literal: constant-pool swap",
+    (node, src) -> begin
+        (JuliaSyntax.is_leaf(node) &&
+         JuliaSyntax.kind(node) == JuliaSyntax.K"Integer" &&
+         node.val isa Integer &&
+         !_is_inside_macro_def(node)) || return false
+        fn = _enclosing_func(node)
+        isnothing(fn) && return false
+        self = Int(node.val)
+        any(v -> v != self, _collect_int_literals!(Int[], fn))
+    end,
+    (node, src) -> begin
+        fn = _enclosing_func(node)
+        isnothing(fn) && return String[]
+        self = Int(node.val)
+        others = sort!(unique!(filter(v -> v != self,
+                                      _collect_int_literals!(Int[], fn))))
+        String[string(v) for v in others]
+    end,
+)
+
+# ─── 9. Dispatch mutation — signature type-annotation swap ────────────────────
+# JULIA-UNIQUE. A method parameter's type annotation IS its dispatch contract.
+# Swap a parameter's type to an incompatible one (`::Int` → `::String`): every
+# call that relied on the original type now MethodErrors (single-method case) or
+# dispatches to a different method (multi-method case). A SURVIVING mutant means
+# the type constraint is never exercised — a genuine dispatch-coverage gap. No
+# other language's mutation tooling can express this; it requires multiple
+# dispatch. Static + falsifiable; opt-in (not in DEFAULT_OPERATORS).
+#
+# Realization note: a literal "redirect this call to a sibling method" mutation
+# would need the runtime type lattice / reflection, which static AST discovery
+# does not have. Mutating the dispatch *contract* at the definition site reaches
+# the same question — does the suite pin dispatch? — without leaving static.
+
+"""Static incompatible-type swap table: original type ↦ a guaranteed-disjoint
+type, so a call with the original argument type stops matching the method."""
+const _DISPATCH_SWAP = Dict{Symbol,String}(
+    :Int     => "String", :Int64 => "String", :Int32 => "String",
+    :Integer => "String", :Real  => "String", :Number => "String",
+    :Float64 => "String", :Float32 => "String", :AbstractFloat => "String",
+    :Bool    => "String",
+    :String  => "Int", :AbstractString => "Int", :Symbol => "Int", :Char => "Int",
+)
+
+"""True iff `node` is a `name::Type` annotation in a method-signature parameter
+position (parent is the signature `call`, grandparent the `function` def)."""
+function _is_signature_param(node::JuliaSyntax.SyntaxNode)::Bool
+    JuliaSyntax.kind(node) == JuliaSyntax.K"::" || return false
+    JuliaSyntax.is_leaf(node) && return false
+    cs = JuliaSyntax.children(node)
+    (!isnothing(cs) && length(cs) == 2) || return false
+    p = node.parent
+    (!isnothing(p) && JuliaSyntax.kind(p) == JuliaSyntax.K"call") || return false
+    gp = p.parent
+    !isnothing(gp) && JuliaSyntax.kind(gp) == JuliaSyntax.K"function"
+end
+
+const OP_DISPATCH_SWAP = MutationOperator(
+    :dispatch_type_swap,
+    "dispatch: signature type swap",
+    (node, src) -> begin
+        (_is_signature_param(node) && !_is_inside_macro_def(node)) || return false
+        tnode = JuliaSyntax.children(node)[2]
+        JuliaSyntax.is_leaf(tnode) &&
+            tnode.val isa Symbol &&
+            haskey(_DISPATCH_SWAP, tnode.val)
+    end,
+    (node, src) -> begin
+        cs = JuliaSyntax.children(node)
+        name = node_text(cs[1], src)
+        newt = _DISPATCH_SWAP[cs[2].val]
+        "$(name)::$(newt)"
+    end,
+)
+
+# ─── 10. Comparison-chain operator ───────────────────────────────────────────
+# `a < b < c` parses as K"comparison" with children [a, <, b, <, c]; the binary
+# relational ops (K"call") never reach it. Swap one comparator per mutant.
+# Multi-replacement: returns Vector{String} (one per operator position).
+#
+# Codeunit hardening: node text may contain multibyte operands (e.g. α < β < γ).
+# JuliaSyntax byte_range returns codeunit offsets; extract all substrings via
+# String(codeunits(full)[lo:hi]) to avoid StringIndexError.
+
+const _RELCHAIN_MAP = Dict{Symbol,String}(
+    :<   => "<=", :<= => "<", :>  => ">=", :>= => ">",
+    :(==) => "!=", :!= => "==",
+)
+
+const OP_COMPARISON_CHAIN = MutationOperator(
+    :cmp_chain,
+    "comparison-chain: swap one comparator",
+    (node, src) -> JuliaSyntax.kind(node) == JuliaSyntax.K"comparison" &&
+                   !JuliaSyntax.is_leaf(node) &&
+                   !_is_inside_macro_def(node),
+    (node, src) -> begin
+        full, nstart = _node_codeunit_slice(node, src)
+        cs = JuliaSyntax.children(node)
+        outs = String[]
+        # operators sit at even indices 2,4,...
+        for i in 2:2:length(cs)-1
+            opnode = cs[i]
+            (JuliaSyntax.is_leaf(opnode) && opnode.val isa Symbol) || continue
+            to = get(_RELCHAIN_MAP, opnode.val, nothing)
+            to === nothing && continue
+            br = JuliaSyntax.byte_range(opnode)
+            lo = first(br) - nstart + 1
+            hi = last(br)  - nstart + 1
+            mut = String(codeunits(full)[1:lo-1]) * to * String(codeunits(full)[hi+1:end])
+            push!(outs, mut)
+        end
+        return outs            # Vector{String}: multi-replacement (distinct ids)
+    end,
+)
+
+# ─── 11. Ternary-swap operator ────────────────────────────────────────────────
+# `cond ? then : else` is K"?" with children [cond, then, else].
+# Swap the then/else byte spans, preserving cond / `?` / `:` / whitespace exactly.
+#
+# Codeunit hardening: same multibyte-safe extraction as comparison-chain above.
+
+const OP_TERNARY_SWAP = MutationOperator(
+    :ternary_swap,
+    "ternary: swap then/else",
+    (node, src) -> JuliaSyntax.kind(node) == JuliaSyntax.K"?" &&
+                   !JuliaSyntax.is_leaf(node) &&
+                   !_is_inside_macro_def(node),
+    (node, src) -> begin
+        cs = JuliaSyntax.children(node)
+        (isnothing(cs) || length(cs) != 3) &&
+            throw(MutationError("OP_TERNARY_SWAP: expected 3 children, got $(isnothing(cs) ? 0 : length(cs))"))
+        full, nstart = _node_codeunit_slice(node, src)
+        tbr = JuliaSyntax.byte_range(cs[2])
+        ebr = JuliaSyntax.byte_range(cs[3])
+        ts = first(tbr) - nstart + 1
+        te = last(tbr)  - nstart + 1
+        es = first(ebr) - nstart + 1
+        ee = last(ebr)  - nstart + 1
+        then_txt = String(codeunits(full)[ts:te])
+        else_txt = String(codeunits(full)[es:ee])
+        between  = String(codeunits(full)[te+1:es-1])   # the " : "
+        return String(codeunits(full)[1:ts-1]) * else_txt * between * then_txt * String(codeunits(full)[ee+1:end])
+    end,
+)
+
+# ─── 12. Broadcast-drop operator ─────────────────────────────────────────────
+# De-vectorize an infix dotted operator: `a .+ b` → `a + b`, `a .< b` → `a < b`.
+# K"dotcall" with an operator Identifier leaf at child 2 (3-child form = infix).
+# The broadcasting `.` sits immediately before that operator in the source.
+# v1 scope: infix dotted operators only (prefix `f.(x)` has 2 children — excluded).
+
+const OP_BROADCAST_DROP = MutationOperator(
+    :broadcast_drop,
+    "broadcast: drop the . (de-vectorize)",
+    (node, src) -> begin
+        JuliaSyntax.kind(node) == JuliaSyntax.K"dotcall" || return false
+        _is_inside_macro_def(node) && return false
+        cs = JuliaSyntax.children(node)
+        (!isnothing(cs) && length(cs) == 3 &&
+         JuliaSyntax.is_leaf(cs[2]) && cs[2].val isa Symbol) || return false
+        # the operator's source text must be preceded by a '.' (infix dotted op)
+        opbr = JuliaSyntax.byte_range(cs[2])
+        first(opbr) > 1 && codeunit(src, first(opbr) - 1) == UInt8('.')
+    end,
+    (node, src) -> begin
+        full, nstart = _node_codeunit_slice(node, src)
+        cs = JuliaSyntax.children(node)
+        opbr = JuliaSyntax.byte_range(cs[2])
+        dot_off = first(opbr) - 1 - nstart + 1   # 1-based codeunit offset of '.' in full
+        return String(codeunits(full)[1:dot_off-1]) * String(codeunits(full)[dot_off+1:end])
+    end,
+)
+
 # ─── Default operator set ──────────────────────────────────────────────────────
 
 """
@@ -321,4 +557,7 @@ const DEFAULT_OPERATORS = MutationOperator[
     OP_FALSE_TO_TRUE,
     OP_RETURN_NOTHING,
     OP_STMT_DELETE,
+    OP_COMPARISON_CHAIN,
+    OP_TERNARY_SWAP,
+    OP_BROADCAST_DROP,
 ]

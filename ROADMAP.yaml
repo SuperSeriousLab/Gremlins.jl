@@ -96,3 +96,75 @@ phases:
         #   src/style.jl:      FAIL  weak    kill_rate=0.10    killed=1/10  (capped first-40; style mutations not asserted)
         # Gate verdict: PASS — two JUI Julia chunks (auth.jl, token.jl) pass T4 via Gremlins.
         # style.jl FAIL is honest signal: TeleTUI style code not covered by smoke tests. Gap recorded.
+  - id: m4
+    name: "M4 Mutant schemata (compile-once mode, Feature C)"
+    status: completed
+    depends_on: [m3]
+    items:
+      - name: "C1: schema_eligible predicate + __GREM_ACTIVE Ref"
+        done: true
+        # 2026-06-09: schema_eligible, _lowers_to_constant, FallbackReason.fallback_schema_ineligible
+      - name: "C2: instrument_function + disjoint_eligible"
+        done: true
+        # 2026-06-09: instrument_function wraps each site in ternary, disjoint_eligible
+        # routes overlapping byte-ranges to warm fallback.
+      - name: "C3: run_mutations_schema end-to-end runner"
+        done: true
+        # 2026-06-09: compile-once schema runner. Groups sites by (relpath, func_range),
+        # instruments once per group, runs per-mutant by flipping __GREM_ACTIVE[].
+        # Warm-fallback for ineligible/nested sites. Agreement sample (C4) + auto-disable.
+      - name: "C4: schema_warm_agreement + hot-path auto-disable"
+        done: true
+        # 2026-06-09: _check_agreement soundness backstop (killed↔survived = hard error).
+        # Hot-path auto-disable: if schema_time > warm_time on agreement sample, route all
+        # eligible sites through warm path. both_ran guard prevents spurious disable.
+      - name: "C5.1: taxonomy double-count fix"
+        done: true
+        # 2026-06-09: Removed spurious fallback_schema_ineligible pre-assignment.
+        # Invariant: sum(taxonomy) == nsites (schema_ran + warm_fallback). No double-count.
+      - name: "C5.2: standardize discovery root (relpath/cmap-key consistency)"
+        done: true
+        # 2026-06-09: All schema tests use discover(src; root=pkgdir) so relpaths
+        # ("src/Demo.jl") match cmap keys. Agreement check is now non-vacuous (both_ran > 0).
+      - name: "C5.3: SchemaRunResult report (print_schema_summary + report_schema_markdown)"
+        done: true
+        # 2026-06-09: print_schema_summary shows schema/warm split + auto-disable line.
+        # report_schema_markdown emits Schema/Warm Split section + Fallback Reason Breakdown.
+      - name: "C5.4: CLI --schema flag"
+        done: true
+        # 2026-06-09: --schema routes to run_mutations_schema (default stays cold/warm).
+        # Mutually exclusive with --warm. Composable with --max-sites, --in-diff, --files.
+      - name: "C5.5: EDD BENCHMARK GATE — schema vs warm speedup"
+        done: true
+        # 2026-06-16 GATE PASS (eligible-heavy fixture): EligBench, 6 functions, each a
+        # block of 12 standalone relational comparisons (RHS of `+=`, no `&&` nesting →
+        # disjoint-schema-eligible; one statement per line → line-covered). Discovered 173
+        # sites, 72 disjoint-eligible. schema_warm_agreement ran ALL 72 BOTH paths on the
+        # SAME set (the clean apples-to-apples number, no warm-only dilution):
+        #   baseline        : 9.37s
+        #   schema_time     : 21.09s   (72 sites, compile-once per function)
+        #   warm_time       : 42.36s   (72 sites, re-eval function per mutant)
+        #   ratio schema/warm = 0.498  → schema 2.01x FASTER
+        #   mismatches      : 0 / 72   (I4 soundness backstop holds)
+        # VERDICT: hypothesis confirmed — compile-once schema beats warm when eligible
+        # sites dominate (72/72 here). The earlier 1.14x-SLOWER number stands too: it was
+        # a mixed 6-site fixture (1/6 eligible), where schema paid setup for ~no eligible
+        # work. Net: schema is a win iff a file is operator-swap-heavy; warm stays default,
+        # schema is opt-in (--schema), and C4 hot-path auto-disable protects the mixed case.
+        # Driver: /tmp/EligBench/bench_c55.jl (schema_warm_agreement, k=all-eligible).
+        # ── prior 2026-06-09 REVIEW RUN (mixed fixture, gate-opening evidence) kept below ──
+        # 2026-06-09 (REVIEW RUN, real number): using-based BenchPkg, 6 sites, same set,
+        # load ~18-22. Both modes produced identical score (3 killed / 5 eligible, 60%).
+        #   schema: baseline 48.38s, mutation Runtime 81.78s  (schema-ran=1, warm-fallback=5)
+        #   warm:   baseline 47.47s, mutation Runtime 71.58s  (warm-executed=6)
+        #   ratio schema/warm = 81.78/71.58 = 1.14  → schema 14% SLOWER on this fixture.
+        # HONEST VERDICT: schema did NOT beat warm here. Cause: only 1/6 capped sites was
+        # disjoint-eligible operator-swap; 5 routed to warm fallback, so schema paid its
+        # instrument + schema-baseline setup cost and still ran 5/6 on the warm path. On an
+        # eligible-heavy file the compile-once win should appear; this small mixed fixture is
+        # adversarial to schema. Gate stays open until a real eligible-heavy speedup is shown.
+        # (Earlier 2026-06-09 attempt: include()-based BenchPkg bypassed warm worker mutations.)
+        # To rerun: julia --project bin/gremlins-cli.jl --schema --max-sites N /path/to/using-pkg
+      - name: "C5.6: ROADMAP.yaml m4 phase + INVARIANTS.md I6"
+        done: true
+        # 2026-06-09: This entry + I6 (schema baseline ≡ plain baseline) added to INVARIANTS.md.

@@ -5,13 +5,16 @@ using SHA
 using Base64
 
 include("operators.jl")
+include("equivalence.jl")
 include("discover.jl")
+include("diff_scope.jl")
 include("patch.jl")
 include("shadow.jl")
 include("coverage.jl")
 include("runner.jl")
 include("cache.jl")
 include("warm.jl")
+include("schema.jl")
 include("report.jl")
 
 # Types
@@ -32,11 +35,19 @@ export OP_INT_INCR, OP_INT_DECR
 export OP_TRUE_TO_FALSE, OP_FALSE_TO_TRUE
 export OP_RETURN_NOTHING
 export OP_STMT_DELETE
+export OP_CONST_POOL
+export OP_DISPATCH_SWAP
+export OP_COMPARISON_CHAIN, OP_TERNARY_SWAP, OP_BROADCAST_DROP
 
 # Discovery
 export discover
 export discover_file
 export mutant_id
+
+# Diff scope (Feature A)
+export parse_diff_hunks
+export changed_lines
+export scope_to_diff
 
 # Patching
 export apply
@@ -76,9 +87,23 @@ export cache_put!
 export cache_size
 export GREMLINS_VERSION
 
+# Mutant schemata (Feature C)
+export __GREM_ACTIVE
+export schema_eligible
+export instrument_function
+export disjoint_eligible
+export run_mutations_schema
+export SchemaRunResult
+export AgreementResult
+export schema_warm_agreement
+
+# Schema report (C5)
+export print_schema_summary
+export report_schema_markdown
+
 # Warm-worker pool (M2)
 export FallbackReason
-export warm_ok, fallback_macro, fallback_typedef, fallback_const, fallback_evalerr, fallback_pollution
+export warm_ok, fallback_macro, fallback_typedef, fallback_const, fallback_evalerr, fallback_pollution, fallback_schema_ineligible
 export WarmEligibility
 export WarmMutantResult
 export WarmRunResult

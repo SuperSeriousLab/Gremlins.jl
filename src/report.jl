@@ -333,6 +333,104 @@ function report_warm_markdown(wr::WarmRunResult)::String
     return join(lines, "\n")
 end
 
+# ─── Schema run report (C5) ──────────────────────────────────────────────────
+
+"""
+    print_schema_summary(sr::SchemaRunResult)
+
+Print a compact schema-run summary to stdout.
+
+Shows the schema/warm split and, when `auto_disabled`, a visible auto-disable line.
+Taxonomy lists the warm-fallback reason breakdown (sums to `warm_fallback`).
+"""
+function print_schema_summary(sr::SchemaRunResult)
+    run = sr.run
+    score = mutation_score(run)
+    score_str = isnan(score) ? "N/A" : "$(round(score * 100, digits=1))%"
+
+    n_total = length(run.results)
+
+    println("━━━ Gremlins Schema Mutation Report ━━━━━━━━━━━━")
+    println("  Package      : $(basename(run.pkgdir))")
+    println("  Score        : $score_str  (killed=$(sr.killed) / eligible=$(n_total - sr.no_coverage - sr.error))")
+    println("  Killed       : $(sr.killed)")
+    println("  Survived     : $(sr.survived)")
+    println("  Timeout      : $(sr.timeout)")
+    println("  NoCov        : $(sr.no_coverage)")
+    println("  Error        : $(sr.error)")
+    println("  Total        : $n_total")
+    println("  schema-ran   : $(sr.schema_ran)   warm-fallback: $(sr.warm_fallback)")
+    if sr.auto_disabled
+        st = round(sr.agreement_schema_time, digits=3)
+        wt = round(sr.agreement_warm_time, digits=3)
+        println("  schema auto-disabled (hot path): schema=$(st)s warm=$(wt)s — ran all eligible on warm")
+    end
+    println("  ── Fallback reason breakdown (warm-fallback=$(sr.warm_fallback)) ──")
+    for r in instances(FallbackReason)
+        cnt = get(sr.taxonomy, r, 0)
+        cnt > 0 && println("    $(string(r)) : $cnt")
+    end
+    println("  Baseline     : $(round(run.baseline_elapsed, digits=2))s")
+    println("  Runtime      : $(round(run.total_elapsed, digits=2))s")
+    println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+end
+
+"""
+    report_schema_markdown(sr::SchemaRunResult) -> String
+
+Emit a Markdown report for a schema run including the schema/warm split and taxonomy.
+"""
+function report_schema_markdown(sr::SchemaRunResult)::String
+    run = sr.run
+    score = mutation_score(run)
+    score_str = isnan(score) ? "N/A" : "$(round(score * 100, digits=1))%"
+
+    lines = String[]
+    push!(lines, "# Gremlins Schema Mutation Report (C5)")
+    push!(lines, "")
+    push!(lines, "**Package:** `$(basename(run.pkgdir))`  ")
+    push!(lines, "**Mutation Score:** $score_str  ")
+    push!(lines, "**Baseline:** $(round(run.baseline_elapsed, digits=2))s  ")
+    push!(lines, "**Total runtime:** $(round(run.total_elapsed, digits=2))s  ")
+    push!(lines, "**schema-ran:** $(sr.schema_ran)   **warm-fallback:** $(sr.warm_fallback)  ")
+    if sr.auto_disabled
+        st = round(sr.agreement_schema_time, digits=3)
+        wt = round(sr.agreement_warm_time, digits=3)
+        push!(lines, "**schema auto-disabled (hot path):** schema=$(st)s warm=$(wt)s — ran all eligible on warm  ")
+    end
+    push!(lines, "")
+    push!(lines, "## Summary")
+    push!(lines, "")
+    push!(lines, "| Outcome       | Count |")
+    push!(lines, "|---------------|-------|")
+    push!(lines, "| Killed        | $(sr.killed) |")
+    push!(lines, "| Survived      | $(sr.survived) |")
+    push!(lines, "| Timeout       | $(sr.timeout) |")
+    push!(lines, "| No coverage   | $(sr.no_coverage) |")
+    push!(lines, "| Error         | $(sr.error) |")
+    push!(lines, "| **Total**     | **$(length(run.results))** |")
+    push!(lines, "")
+    push!(lines, "## Schema/Warm Split")
+    push!(lines, "")
+    push!(lines, "| Path          | Count |")
+    push!(lines, "|---------------|-------|")
+    push!(lines, "| schema-ran    | $(sr.schema_ran) |")
+    push!(lines, "| warm-fallback | $(sr.warm_fallback) |")
+    push!(lines, "")
+    push!(lines, "## Fallback Reason Breakdown (warm-fallback=$(sr.warm_fallback))")
+    push!(lines, "")
+    push!(lines, "| Reason | Count |")
+    push!(lines, "|--------|-------|")
+    for r in instances(FallbackReason)
+        cnt = get(sr.taxonomy, r, 0)
+        push!(lines, "| $(string(r)) | $cnt |")
+    end
+    push!(lines, "")
+    return join(lines, "\n")
+end
+
 # Export
 export print_warm_summary
 export report_warm_markdown
+export print_schema_summary
+export report_schema_markdown

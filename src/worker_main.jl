@@ -91,6 +91,21 @@ function _extract_str(line::AbstractString, field::AbstractString)::Union{String
     return v
 end
 
+"""
+    _extract_str_or_num(line, field) -> Union{String, Nothing}
+
+Extract `field`'s value whether it is quoted (`"k"`) or a bare JSON number (`k`).
+Used for the schema_run `key` field which is sent unquoted.
+"""
+function _extract_str_or_num(line::AbstractString, field::AbstractString)::Union{String, Nothing}
+    s = _extract_str(line, field)
+    s !== nothing && return s
+    pattern = Regex("\"" * field * "\"\\s*:\\s*([+-]?[0-9]+)")
+    m = match(pattern, line)
+    m === nothing && return nothing
+    return m.captures[1]
+end
+
 # ─── Module body extraction ───────────────────────────────────────────────────
 
 """
@@ -212,6 +227,121 @@ function _run_one_mutant(
     return (outcome, time() - t0, err_msg)
 end
 
+# ─── Schema (compile-once) execution ──────────────────────────────────────────
+#
+# Schema mode differs from warm mode: instead of swapping a function body per
+# mutant (recompile each time), it instruments the function ONCE with a runtime
+# `Main.__GREM_ACTIVE[] == k ? (mut) : (orig)` guard, evals it once, then flips
+# the global Ref per mutant. Tests are still include'd FRESH each mutant (so they
+# compile in a world ≥ the instrument world and call the instrumented methods,
+# reading the Ref at runtime — atlas-flash bug 2 world-age fix).
+
+"""
+    _run_test_fresh(test_path) -> (outcome::String, err::String)
+
+Run `test_path` in a fresh child-module of Main via invokelatest(include).
+Clean completion = "survived"; any thrown exception (incl. TestSetException) =
+"killed" (I3: a kill requires a captured failing test). stdout is redirected to
+stderr for the duration to protect the JSON protocol channel.
+
+This is the SAME fresh-include primitive the warm path uses (_run_one_mutant
+step b), factored out so schema_run reuses it verbatim.
+"""
+function _run_test_fresh(test_path::AbstractString)::Tuple{String, String}
+    outcome = "survived"
+    err_msg = ""
+    old_stdout = stdout
+    try
+        redirect_stdout(stderr)
+    catch
+    end
+    try
+        mod_name = Symbol("__gremlins_test_$(rand(UInt32))__")
+        Core.eval(Main, :(module $mod_name; end))
+        test_mod = Core.eval(Main, mod_name)
+        Base.invokelatest(Base.include, test_mod, test_path)
+        outcome = "survived"
+    catch e
+        outcome = "killed"
+        err_msg = string(typeof(e))
+    finally
+        try
+            redirect_stdout(old_stdout)
+        catch
+        end
+    end
+    return (outcome, err_msg)
+end
+
+"""
+    _ensure_active!()
+
+Define `Main.__GREM_ACTIVE = Ref(0)` in the worker's Main if it is not already
+bound. The instrumented code (eval'd into the package module) references
+`Main.__GREM_ACTIVE[]`, which resolves to this binding. The worker does NOT load
+Gremlins, so the controller cannot flip a Ref across the process boundary — it
+sends the key over the protocol and the worker flips this binding locally.
+"""
+function _ensure_active!()
+    if !isdefined(Main, :__GREM_ACTIVE)
+        Core.eval(Main, :(const __GREM_ACTIVE = Base.RefValue(0)))
+    end
+    return nothing
+end
+
+"""
+    _instrument_once(pkg_mod, src_path, instrumented_body) -> (ok::Bool, err::String)
+
+Parse `instrumented_body` (the source text of ONE instrumented top-level
+function) and `Core.eval` it ONCE into `pkg_mod`. This is the compile-once step:
+the method is redefined with the runtime Ref-guard, and invalidation propagates
+to callers on their next call (picked up by the fresh-include'd tests).
+"""
+function _instrument_once(
+    pkg_mod::Module,
+    src_path::AbstractString,
+    instrumented_body::AbstractString,
+)::Tuple{Bool, String}
+    _ensure_active!()
+    body = try
+        _extract_module_body(instrumented_body, src_path)
+    catch e
+        return (false, "parse instrumented: $(sprint(showerror, e))")
+    end
+    try
+        Core.eval(pkg_mod, body)
+    catch e
+        return (false, "eval instrumented into module: $(sprint(showerror, e))")
+    end
+    return (true, "")
+end
+
+"""
+    _schema_run(key, test_path) -> (outcome::String, elapsed::Float64, err::String)
+
+Set `Main.__GREM_ACTIVE[] = key`, run the tests fresh, classify, reset to 0.
+key=0 selects the all-original baseline (used for the schema-baseline soundness
+check); key=k activates mutant k. The Ref is ALWAYS reset to 0 (try/finally).
+"""
+function _schema_run(key::Int, test_path::AbstractString)::Tuple{String, Float64, String}
+    t0 = time()
+    _ensure_active!()
+    outcome = "survived"
+    err_msg = ""
+    try
+        Main.__GREM_ACTIVE[] = key
+        outcome, err_msg = _run_test_fresh(test_path)
+    catch e
+        return ("error", time() - t0, "schema_run: $(sprint(showerror, e))")
+    finally
+        try
+            Main.__GREM_ACTIVE[] = 0
+        catch
+        end
+    end
+    return (outcome, time() - t0, err_msg)
+end
+
 # ─── Main loop ────────────────────────────────────────────────────────────────
 
 function main()
@@ -300,6 +430,54 @@ function main()
                 pkg_mod, src_path, mutated_content, orig_content, test_path
             )
 
+            _respond("outcome" => outcome,
+                     "elapsed" => round(elapsed, digits=4),
+                     "err"     => err_msg)
+
+        elseif cmd == "instrument"
+            # Schema compile-once: eval ONE instrumented top-level function into
+            # the package module. {"cmd":"instrument","src_path":"<p>","body_b64":"<b64>"}
+            if pkg_mod === nothing
+                _respond("ok" => false, "err" => "package not loaded at startup")
+                continue
+            end
+            src_path = _extract_str(line, "src_path")
+            b_b64    = _extract_str(line, "body_b64")
+            if any(isnothing, (src_path, b_b64))
+                _respond("ok" => false, "err" => "malformed instrument request: missing fields")
+                continue
+            end
+            instr_body = try
+                String(Base64.base64decode(b_b64))
+            catch e
+                _respond("ok" => false, "err" => "base64 decode body: $e")
+                continue
+            end
+            ok, ierr = _instrument_once(pkg_mod, src_path, instr_body)
+            _respond("ok" => ok, "err" => ierr)
+
+        elseif cmd == "schema_run"
+            # Flip __GREM_ACTIVE[]=key, run tests fresh, classify, reset.
+            # {"cmd":"schema_run","key":<int>,"test_path":"<abs>"}
+            if pkg_mod === nothing
+                _respond("outcome" => "error", "elapsed" => 0.0,
+                         "err" => "package not loaded at startup")
+                continue
+            end
+            key_str   = _extract_str_or_num(line, "key")
+            test_path = _extract_str(line, "test_path")
+            if any(isnothing, (key_str, test_path))
+                _respond("outcome" => "error", "elapsed" => 0.0,
+                         "err" => "malformed schema_run request: missing fields")
+                continue
+            end
+            key = tryparse(Int, string(key_str))
+            if key === nothing
+                _respond("outcome" => "error", "elapsed" => 0.0,
+                         "err" => "schema_run: bad key '$key_str'")
+                continue
+            end
+            outcome, elapsed, err_msg = _schema_run(key, test_path)
             _respond("outcome" => outcome,
                      "elapsed" => round(elapsed, digits=4),
                      "err"     => err_msg)
