@@ -92,3 +92,57 @@ function detect_units(runtests_path::AbstractString;
     end
     return prelude, units
 end
+
+"""Recursively delete every `.cov` file under `dir` (cov counts accumulate)."""
+function _rm_cov_files(dir::AbstractString)
+    for (dp, _, fns) in walkdir(dir), fn in fns
+        endswith(fn, ".cov") && rm(joinpath(dp, fn); force=true)
+    end
+end
+
+"""
+    per_unit_coverage(pkgdir; test_dir="test", test_file="runtests.jl",
+                      timeout=600.0) -> (Dict{String,CoverageMap}, Vector{String})
+
+Run each detected test unit in isolation under `--code-coverage=user` in one
+reused shadow copy, returning per-unit coverage maps (keyed by unit label,
+remapped to real relpaths) plus the sorted labels of units that errored/timed
+out. The real package tree is never written (shadow only). `.cov` files are
+cleared between units so maps are per-unit, not cumulative.
+"""
+function per_unit_coverage(pkgdir::AbstractString;
+                           test_dir::AbstractString = "test",
+                           test_file::AbstractString = "runtests.jl",
+                           timeout::Float64 = 600.0)
+    pkgdir = abspath(pkgdir)
+    runtests_path = joinpath(pkgdir, test_dir, test_file)
+    isfile(runtests_path) || throw(MutationError(
+        "per_unit_coverage: test file not found: $runtests_path"))
+
+    _, units = detect_units(runtests_path; test_dir=joinpath(pkgdir, test_dir))
+
+    maps = Dict{String, CoverageMap}()
+    failed = String[]
+    shadow = _make_shadow(pkgdir)
+    try
+        shadow_testdir = joinpath(shadow, test_dir)
+        driver_path = joinpath(shadow_testdir, "__gremlins_blame_driver.jl")
+        jl = _julia_exe()
+        for u in units
+            _rm_cov_files(shadow)
+            write(driver_path, u.driver)
+            cmd = Cmd([jl, "--project=$shadow", "--code-coverage=user", driver_path])
+            exit_code, _ = _run_with_timeout(cmd, timeout)
+            rm(driver_path; force=true)
+            if exit_code != 0
+                push!(failed, u.label)
+                continue
+            end
+            shadow_cmap = _collect_coverage(shadow)
+            maps[u.label] = _remap_cmap_to_real(shadow_cmap, pkgdir, shadow)
+        end
+    finally
+        rm(shadow; recursive=true, force=true)
+    end
+    return maps, sort(failed)
+end

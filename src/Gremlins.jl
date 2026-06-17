@@ -69,6 +69,11 @@ export baseline_run
 export covered_lines
 export is_covered
 
+# Blame (Feature 2)
+export TestUnit
+export detect_units
+export per_unit_coverage
+
 # Runner (M1)
 export MutantOutcome
 export killed, survived, timeout, no_coverage, error
