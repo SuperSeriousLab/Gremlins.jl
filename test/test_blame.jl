@@ -133,3 +133,47 @@ end
         @test !haskey(maps, "test_bad.jl")
     end
 end
+
+using Gremlins: BlameReport, _join_blame, render_blame, CoverageMap,
+                MutantResult, MutationSite, survived
+
+# helper: build a synthetic survivor at (relpath, line)
+function _surv(relpath, line, id)
+    site = MutationSite(id, relpath, 1:1, :op, "op", "<", "<=", line)
+    return MutantResult(site, survived, 0.0, "")
+end
+
+@testset "_join_blame — attribution, multi-blame, unattributed, failed" begin
+    s1 = _surv("src/a.jl", 10, "1111111111111111")  # covered by t1 only
+    s2 = _surv("src/a.jl", 20, "2222222222222222")  # covered by t1 and t2
+    s3 = _surv("src/b.jl", 30, "3333333333333333")  # covered by nobody -> unattributed
+    survivors = [s1, s2, s3]
+
+    pkg = "/fake"
+    maps = Dict(
+        "t1.jl" => CoverageMap(Dict("src/a.jl" => Set([10, 20])), pkg),
+        "t2.jl" => CoverageMap(Dict("src/a.jl" => Set([20])), pkg),
+    )
+    rep = _join_blame(survivors, maps, ["t_broken.jl"])
+
+    @test Set(keys(rep.blamed)) == Set(["t1.jl", "t2.jl"])
+    @test [r.site.id for r in rep.blamed["t1.jl"]] == [s1.site.id, s2.site.id]  # sorted by (relpath,line)
+    @test [r.site.id for r in rep.blamed["t2.jl"]] == [s2.site.id]
+    @test [r.site.id for r in rep.unattributed] == [s3.site.id]
+    @test rep.failed_units == ["t_broken.jl"]
+end
+
+@testset "render_blame — deterministic section text" begin
+    s1 = _surv("src/a.jl", 10, "1111111111111111")
+    s3 = _surv("src/b.jl", 30, "3333333333333333")
+    rep = BlameReport(Dict("t1.jl" => [s1]), [s3], ["t_broken.jl"])
+    buf = IOBuffer()
+    render_blame(buf, rep)
+    out = String(take!(buf))
+    @test occursin("Survivors by Responsible Test", out)
+    @test occursin("t1.jl", out)
+    @test occursin("src/a.jl:10", out)
+    @test occursin("Unattributed survivors", out)
+    @test occursin("src/b.jl:30", out)
+    @test occursin("t_broken.jl", out)
+end

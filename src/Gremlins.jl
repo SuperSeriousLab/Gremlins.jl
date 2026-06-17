@@ -73,6 +73,10 @@ export is_covered
 export TestUnit
 export detect_units
 export per_unit_coverage
+export BlameReport
+export _join_blame
+export blame_survivors
+export render_blame
 
 # Runner (M1)
 export MutantOutcome

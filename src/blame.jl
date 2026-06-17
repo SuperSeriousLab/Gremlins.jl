@@ -153,3 +153,89 @@ function per_unit_coverage(pkgdir::AbstractString;
     end
     return maps, sort(failed)
 end
+
+"""
+    BlameReport
+
+`blamed`: unit label => survivors whose mutated line that unit covers (a
+survivor may appear under several units). `unattributed`: covered whole-suite
+but attributed to no single unit (e.g. every covering unit errored).
+`failed_units`: units whose focused driver errored/timed out.
+"""
+struct BlameReport
+    blamed::Dict{String, Vector{MutantResult}}
+    unattributed::Vector{MutantResult}
+    failed_units::Vector{String}
+end
+
+_blame_key(r::MutantResult) = (r.site.relpath, r.site.line, r.site.id)
+
+"""Pure join: survivors × per-unit coverage -> BlameReport. No subprocesses."""
+function _join_blame(survivors::Vector{MutantResult},
+                     maps::Dict{String, CoverageMap},
+                     failed::Vector{String})::BlameReport
+    blamed = Dict{String, Vector{MutantResult}}()
+    attributed = Set{String}()
+    for label in sort(collect(keys(maps)))
+        cmap = maps[label]
+        hits = filter(s -> s.site.line in covered_lines(cmap, s.site.relpath), survivors)
+        isempty(hits) && continue
+        for h in hits
+            push!(attributed, h.site.id)
+        end
+        blamed[label] = sort(hits, by=_blame_key)
+    end
+    unattributed = sort(filter(s -> !(s.site.id in attributed), survivors), by=_blame_key)
+    return BlameReport(blamed, unattributed, sort(failed))
+end
+
+"""
+    blame_survivors(result, pkgdir; test_dir="test", test_file="runtests.jl",
+                    timeout=600.0) -> BlameReport
+
+Opt-in pass: take the surviving mutants from `result`, acquire per-unit
+coverage, and name the test units covering each survivor. N×(startup+load) cost
+— not the default campaign.
+"""
+function blame_survivors(result::RunResult, pkgdir::AbstractString;
+                         test_dir::AbstractString = "test",
+                         test_file::AbstractString = "runtests.jl",
+                         timeout::Float64 = 600.0)::BlameReport
+    survivors = filter(r -> r.outcome == survived, result.results)
+    maps, failed = per_unit_coverage(pkgdir; test_dir=test_dir,
+                                     test_file=test_file, timeout=timeout)
+    return _join_blame(survivors, maps, failed)
+end
+
+"""Print the human-readable blame section. Deterministic, sorted."""
+function render_blame(io::IO, report::BlameReport)
+    println(io, "━━━ Survivors by Responsible Test ━━━━━━━━━━━━━")
+    if isempty(report.blamed)
+        println(io, "  (no survivors attributed to any test file)")
+    else
+        for label in sort(collect(keys(report.blamed)))
+            rs = report.blamed[label]
+            println(io, "  $label  ($(length(rs)) survivor$(length(rs) == 1 ? "" : "s"))")
+            for r in rs
+                s = r.site
+                println(io, "    - $(s.relpath):$(s.line)  $(s.op_name)  " *
+                            "$(repr(s.original))→$(repr(s.replacement))  [$(s.id[1:8])]")
+            end
+        end
+    end
+    if !isempty(report.unattributed)
+        println(io, "  Unattributed survivors ($(length(report.unattributed))):")
+        for r in report.unattributed
+            s = r.site
+            println(io, "    - $(s.relpath):$(s.line)  $(s.op_name)  [$(s.id[1:8])]")
+        end
+    end
+    if !isempty(report.failed_units)
+        println(io, "  Units that errored under focused driver " *
+                    "(their survivors fell back to unattributed):")
+        for l in report.failed_units
+            println(io, "    - $l")
+        end
+    end
+    println(io, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+end
