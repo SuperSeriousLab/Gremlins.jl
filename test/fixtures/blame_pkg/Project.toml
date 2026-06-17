@@ -1,0 +1,9 @@
+name = "BlamePkg"
+uuid = "00000000-0000-0000-0000-0000000000b1"
+version = "0.0.1"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
