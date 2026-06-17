@@ -132,6 +132,11 @@ function per_unit_coverage(pkgdir::AbstractString;
     maps = Dict{String, CoverageMap}()
     failed = String[]
     shadow = _make_shadow(pkgdir)
+
+    # Augment shadow with test-only deps so `--project=<shadow>` can load them.
+    # No-op (returns false) when the package has no non-stdlib test deps.
+    _augment_shadow_with_test_deps(pkgdir, shadow)
+
     try
         shadow_testdir = joinpath(shadow, test_dir)
         driver_path = joinpath(shadow_testdir, "__gremlins_blame_driver.jl")

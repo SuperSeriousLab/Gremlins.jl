@@ -114,5 +114,52 @@
         @test n_executed > 0
     end
 
+    # ── GREEN: run_mutations_warm also sees the test dep (warm path) ──────────
+    #
+    # FALSIFIABILITY NOTE: this test FAILS if the _augment_shadow_with_test_deps
+    # call is removed from run_mutations_warm (warm.jl). Without augmentation the
+    # cold-fallback subprocess cannot load LocalHelper, causing all mutants to
+    # :error rather than :killed/:survived/:no_coverage.
+    @testset "run_mutations_warm succeeds with test-only dep" begin
+        sites = discover(joinpath(fixture_dir, "src"); root=fixture_dir)
+        @test !isempty(sites)
+
+        elapsed_b, cmap = baseline_run(fixture_dir)
+
+        wrr = run_mutations_warm(fixture_dir, sites, cmap;
+                                 mutant_timeout = 120.0,
+                                 verbose = false,
+                                 pkg_name = "FixturePkg")
+        @test wrr isa WarmRunResult
+        @test !isempty(wrr.warm_results)
+        # No env-resolution failure: no mutant should have a LoadError error_msg
+        n_load_errors = count(wrr.warm_results) do wr
+            wr.base.outcome == Gremlins.error &&
+            occursin("LoadError", wr.base.error_msg)
+        end
+        @test n_load_errors == 0
+        # At least one mutant executed (killed/survived/timeout) rather than :error
+        n_executed = count(wrr.warm_results) do wr
+            wr.base.outcome in (killed, survived, Gremlins.timeout)
+        end
+        @test n_executed > 0
+    end
+
+    # ── GREEN: per_unit_coverage (blame path) sees the test dep ──────────────
+    #
+    # FALSIFIABILITY NOTE: this test FAILS if the _augment_shadow_with_test_deps
+    # call is removed from per_unit_coverage (blame.jl). Without augmentation each
+    # unit driver subprocess cannot load LocalHelper, so every unit errors out and
+    # failed_units becomes non-empty (containing the fixture's inline testset unit).
+    @testset "per_unit_coverage has no env-resolution failures" begin
+        maps, failed_units = per_unit_coverage(fixture_dir; timeout = 120.0)
+        # All units must run cleanly — no LoadError from missing LocalHelper
+        # If augmentation is removed, failed_units will contain "<inline>" or the
+        # included test-file label, proving the fix is load-bearing.
+        @test isempty(failed_units)
+        # At least one unit produced coverage
+        @test !isempty(maps)
+    end
+
     rm(tmpdir; recursive=true, force=true)
 end

@@ -208,8 +208,9 @@ function _augment_shadow_with_test_deps(
     if isfile(test_proj_path)
         test_proj = try
             TOML.parsefile(test_proj_path)
-        catch
-            Dict{String, Any}()  # malformed test/Project.toml → skip silently
+        catch e
+            @warn "Failed to parse test/Project.toml; test-only deps will not be merged into shadow" path=test_proj_path exception=e
+            Dict{String, Any}()
         end
 
         for (name, uuid) in get(test_proj, "deps", Dict{String, Any}())
@@ -306,8 +307,15 @@ function _augment_shadow_with_test_deps(
             "while merging test deps into shadow — $e"
         ))
     finally
-        # Restore caller's active project (defensive: Pkg.activate is process-global)
-        prev_active === nothing || Pkg.activate(prev_active; io=devnull)
+        # Restore caller's active project (defensive: Pkg.activate is process-global).
+        # When prev_active is nothing the caller had no active project — activate the
+        # default (stdlib) environment rather than passing nothing to Pkg.activate,
+        # which would be a no-op and leave the shadow as the active project.
+        if prev_active === nothing
+            Pkg.activate(; io=devnull)
+        else
+            Pkg.activate(prev_active; io=devnull)
+        end
     end
 
     return true

@@ -175,6 +175,11 @@ function run_mutations_warm(
     # Create shadow copy ONCE — cold fallbacks run in shadow, real tree never written (I1)
     shadow = _make_shadow(pkgdir)
     verbose && println("[gremlins/warm] Shadow copy at: $shadow")
+
+    # Augment shadow with test-only deps so `--project=<shadow>` can load them.
+    # No-op (returns false) when the package has no non-stdlib test deps.
+    _augment_shadow_with_test_deps(pkgdir, shadow)
+
     shadow_test_path = joinpath(shadow, test_dir, test_file)
 
     # Start worker
