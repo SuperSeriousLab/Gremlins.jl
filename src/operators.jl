@@ -401,6 +401,29 @@ const _DISPATCH_SWAP = Dict{Symbol,String}(
     :String  => "Int", :AbstractString => "Int", :Symbol => "Int", :Char => "Int",
 )
 
+"""True iff `node` is a `name::Type` annotation in a method-signature
+positional-parameter position. Superset of `_is_signature_param`: also matches
+methods carrying a `where` clause, where the `::`'s grandparent is `K"where"`
+(whose own parent is the `K"function"` def) rather than `K"function"` directly.
+Used by the dispatch operators (union-drop, where-relax)."""
+function _is_dispatch_sig_param(node::JuliaSyntax.SyntaxNode)::Bool
+    JuliaSyntax.kind(node) == JuliaSyntax.K"::" || return false
+    JuliaSyntax.is_leaf(node) && return false
+    cs = JuliaSyntax.children(node)
+    (!isnothing(cs) && length(cs) == 2 && JuliaSyntax.is_leaf(cs[1])) || return false
+    p = node.parent
+    (!isnothing(p) && JuliaSyntax.kind(p) == JuliaSyntax.K"call") || return false
+    gp = p.parent
+    isnothing(gp) && return false
+    k = JuliaSyntax.kind(gp)
+    k == JuliaSyntax.K"function" && return true
+    if k == JuliaSyntax.K"where"
+        ggp = gp.parent
+        return !isnothing(ggp) && JuliaSyntax.kind(ggp) == JuliaSyntax.K"function"
+    end
+    return false
+end
+
 """True iff `node` is a `name::Type` annotation in a method-signature parameter
 position (parent is the signature `call`, grandparent the `function` def)."""
 function _is_signature_param(node::JuliaSyntax.SyntaxNode)::Bool

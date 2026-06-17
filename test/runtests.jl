@@ -690,3 +690,6 @@ include("test_idiom_operators.jl")
 
 # ─── Feature C: Mutant schemata (C1 + C2) ────────────────────────────────────
 include("test_schema.jl")
+
+# ─── Feature D: dispatch-mutation operators (v1) ──────────────────────────────
+include("test_dispatch_operators.jl")
