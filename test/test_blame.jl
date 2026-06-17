@@ -97,7 +97,12 @@ using Gremlins: per_unit_coverage, covered_lines
         maps, failed = per_unit_coverage(pkg)
         @test isempty(failed)
         @test Set(keys(maps)) == Set(["test_f.jl", "test_g.jl"])
-        # f's body line (2) covered only by test_f.jl; g's body line (4) only by test_g.jl
+        # no phantom key for the synthetic driver file
+        @test !any(k -> occursin("__gremlins_blame_driver", k),
+                   keys(maps["test_f.jl"].data))
+        @test !any(k -> occursin("__gremlins_blame_driver", k),
+                   keys(maps["test_g.jl"].data))
+        # lines covered only by test_f.jl vs only by test_g.jl prove per-unit isolation
         @test 2 in covered_lines(maps["test_f.jl"], "src/BlameCov.jl")
         @test !(4 in covered_lines(maps["test_f.jl"], "src/BlameCov.jl"))
         @test 4 in covered_lines(maps["test_g.jl"], "src/BlameCov.jl")

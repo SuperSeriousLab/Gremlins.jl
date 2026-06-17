@@ -134,6 +134,13 @@ function per_unit_coverage(pkgdir::AbstractString;
             cmd = Cmd([jl, "--project=$shadow", "--code-coverage=user", driver_path])
             exit_code, _ = _run_with_timeout(cmd, timeout)
             rm(driver_path; force=true)
+            # Remove any .cov files the driver emitted so _collect_coverage
+            # never returns a phantom "test/__gremlins_blame_driver.jl" key.
+            for fn in readdir(shadow_testdir)
+                if startswith(fn, "__gremlins_blame_driver.jl") && endswith(fn, ".cov")
+                    rm(joinpath(shadow_testdir, fn); force=true)
+                end
+            end
             if exit_code != 0
                 push!(failed, u.label)
                 continue
