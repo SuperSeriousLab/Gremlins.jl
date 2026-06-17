@@ -20,6 +20,7 @@ struct ParsedArgs_t
     test_file::String
     warm::Bool
     schema::Bool
+    blame::Bool
     json_out::Union{String, Nothing}
     strong_threshold::Float64
     acceptable_threshold::Float64
@@ -32,6 +33,7 @@ function _parse_args_t(argv::Vector{String})::ParsedArgs_t
     test_file = "runtests.jl"
     warm = false
     schema = false
+    blame = false
     json_out = nothing
     strong = 0.80
     acceptable = 0.60
@@ -52,6 +54,8 @@ function _parse_args_t(argv::Vector{String})::ParsedArgs_t
             warm = true
         elseif arg == "--schema"
             schema = true
+        elseif arg == "--blame"
+            blame = true
         elseif arg == "--json"
             i += 1; i > length(argv) && throw(ArgumentError("--json requires a value"))
             json_out = argv[i]
@@ -78,7 +82,7 @@ function _parse_args_t(argv::Vector{String})::ParsedArgs_t
     isempty(pkg) && throw(ArgumentError("--pkg is required"))
     acceptable > strong && throw(ArgumentError("--acceptable must be <= --strong"))
     (warm && schema) && throw(ArgumentError("--warm and --schema are mutually exclusive"))
-    ParsedArgs_t(pkg, files, test_file, warm, schema, json_out, strong, acceptable, max_sites)
+    ParsedArgs_t(pkg, files, test_file, warm, schema, blame, json_out, strong, acceptable, max_sites)
 end
 
 function classify_band_t(kill_rate::Float64, strong::Float64, acceptable::Float64)::Symbol
@@ -241,18 +245,10 @@ end
 end
 
 @testset "CLI parse — --blame flag" begin
-    # mirror of bin/gremlins-cli.jl _parse_args: --blame is a valueless bool
-    function has_blame(argv)
-        blame = false
-        i = 1
-        while i <= length(argv)
-            argv[i] == "--blame" && (blame = true)
-            i += 1
-        end
-        return blame
-    end
-    @test has_blame(["--pkg", "x", "--blame"])
-    @test !has_blame(["--pkg", "x"])
+    a = _parse_args_t(["--pkg", "x", "--blame"])
+    @test a.blame == true
+    a2 = _parse_args_t(["--pkg", "x"])
+    @test a2.blame == false
 end
 
 @testset "CLI — band classification" begin

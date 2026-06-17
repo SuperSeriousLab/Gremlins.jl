@@ -8,6 +8,14 @@
 # testfile-includes minus @testset blocks) is therefore sufficient for any
 # subfile that runs correctly in the real suite. Detection failure -> the unit
 # is reported failed and its survivors fall back to "unattributed".
+#
+# Known limitations:
+# - a bare @test at top level in runtests.jl (outside any @testset) is treated as
+#   prelude and runs in every unit driver, which can widen blame (over-attribution);
+#   it never causes false blame of an uncovered line.
+# - top-level defs interleaved between testsets are emitted in the prelude before
+#   all inline testsets, not at their original position — harmless because top-level
+#   defs resolve by name at call time.
 
 using JuliaSyntax
 
@@ -39,7 +47,7 @@ function _include_target(node)::Union{String, Nothing}
     JuliaSyntax.sourcetext(cs[1]) == "include" || return nothing
     for c in cs[2:end]
         if JuliaSyntax.kind(c) == JuliaSyntax.K"string"
-            return strip(JuliaSyntax.sourcetext(c), ['"'])
+            return String(strip(JuliaSyntax.sourcetext(c), ['"']))
         end
     end
     return nothing
