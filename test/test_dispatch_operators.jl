@@ -47,4 +47,43 @@ end
     @test f(_param_node("g() = (x::Int = 3; x)")) == false              # typed local
 end
 
+
+# ── OP_UNION_DROP ──
+@testset "OP_UNION_DROP — enumeration + falsifiability" begin
+    src = "fu(x::Union{Int,String}) = x isa Int ? 1 : 2\n"
+    sites = _sites(src, OP_UNION_DROP)
+    # One mutant per dropped member → 2 sites (→Int, →String).
+    @test length(sites) == 2
+    @test Set(s.replacement for s in sites) == Set(["Int", "String"])
+    @test all(s -> s.op_id == :union_drop, sites)
+    @test all(s -> s.original == "Union{Int,String}", sites)
+    # Distinct ids despite identical (range, op_id) — replacement disambiguates.
+    @test length(unique(s -> s.id, sites)) == 2
+    # Round-trip safety for every emitted mutant.
+    for s in sites
+        @test revert(s, apply(s, src)) == src
+    end
+
+    # Falsifiability: dropping `String` leaves `fu(x::Int)`; fu("a") no longer
+    # dispatches → MethodError → any test calling fu(::String) fails → killed.
+    drop_to_int = first(s for s in sites if s.replacement == "Int")
+    mutated = apply(drop_to_int, src)
+    f_orig = _eval_fresh(src, :fu)
+    f_mut  = _eval_fresh(mutated, :fu)
+    @test f_orig("a") == 2
+    @test f_orig(3)   == 1
+    @test_throws MethodError f_mut("a")   # String branch dropped → killed
+    @test f_mut(3) == 1                    # surviving member still works
+end
+
+# ── OP_UNION_DROP must NOT fire on non-signature unions ──
+@testset "OP_UNION_DROP — negative cases" begin
+    # Union as a value in the body, not a signature param type.
+    @test isempty(_sites("g() = Union{Int,String}\n", OP_UNION_DROP))
+    # Single-member curly is degenerate → no mutant.
+    @test isempty(_sites("h(x::Union{Int}) = x\n", OP_UNION_DROP))
+    # Non-Union curly (parametric type) → no mutant.
+    @test isempty(_sites("k(x::Vector{Int}) = x\n", OP_UNION_DROP))
+end
+
 end  # @testset

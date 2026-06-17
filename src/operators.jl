@@ -455,6 +455,36 @@ const OP_DISPATCH_SWAP = MutationOperator(
     end,
 )
 
+# ─── 9b. Union-member drop ────────────────────────────────────────────────────
+# JULIA-UNIQUE dispatch mutation. `f(x::Union{A,B})` accepts both A and B. Drop
+# one member → `f(x::A)`: calls typed as the dropped member stop dispatching here
+# (MethodError, or redirect to another method). A SURVIVING mutant means that
+# union branch is never exercised — a dispatch-coverage gap. Static + falsifiable;
+# opt-in. One mutant per member (Vector{String}; replacement disambiguates ids).
+
+"""True iff `node` is a `Union{...}` type (`K"curly"` led by `Union`) in a
+method-signature parameter position, with at least two members."""
+function _is_signature_union(node::JuliaSyntax.SyntaxNode)::Bool
+    JuliaSyntax.kind(node) == JuliaSyntax.K"curly" || return false
+    cs = JuliaSyntax.children(node)
+    (!isnothing(cs) && length(cs) >= 3) || return false          # Union + ≥2 members
+    (JuliaSyntax.is_leaf(cs[1]) && cs[1].val === :Union) || return false
+    p = node.parent
+    (!isnothing(p) && JuliaSyntax.kind(p) == JuliaSyntax.K"::") || return false
+    _is_dispatch_sig_param(p)
+end
+
+const OP_UNION_DROP = MutationOperator(
+    :union_drop,
+    "dispatch: drop a Union member",
+    (node, src) -> _is_signature_union(node) && !_is_inside_macro_def(node),
+    (node, src) -> begin
+        cs = JuliaSyntax.children(node)
+        # children[2:end] are the union members; one mutant per member.
+        return String[node_text(m, src) for m in cs[2:end]]
+    end,
+)
+
 # ─── 10. Comparison-chain operator ───────────────────────────────────────────
 # `a < b < c` parses as K"comparison" with children [a, <, b, <, c]; the binary
 # relational ops (K"call") never reach it. Swap one comparator per mutant.
