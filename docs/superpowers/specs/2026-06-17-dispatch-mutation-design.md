@@ -18,7 +18,33 @@ no runtime method-table reflection (honours the M0 static-only rule).
 
 ## 2. Scope
 
-Four new opt-in operators, ranked by signal-per-implementation-cost:
+> **v1/v1.1 split (decided 2026-06-17 after reading the code).** The operator model
+> is stateless per-node `(node, src)`, walked file-by-file — there is **no cross-file
+> context**. Two operators fit this model with zero architecture change; two require a
+> new whole-project method-map pass. Ship the cheap pair first (evidence-first), defer
+> the map-dependent pair to its own spec once the thesis is validated on real packages.
+>
+> - **v1 (this plan's implementation):** `OP_UNION_DROP` + `OP_WHERE_RELAX` + a
+>   `where`-aware signature-param helper. Map-free, stateless, fits the existing walker.
+> - **v1.1 (future, own spec):** `OP_SIG_WIDEN` (collision/ambiguity-guarded) +
+>   `OP_METHOD_DELETE` (cross-file sibling), both via a new additive `discover_dispatch`
+>   whole-project method-map pass. They share that infrastructure → one focused effort.
+>
+> **Code-reading findings that drove the split:**
+> 1. `OP_DISPATCH_SWAP` (`:dispatch_type_swap`) already exists — swaps a sig param to a
+>    disjoint type (`::Int`→`::String`). `OP_SIG_WIDEN` overlaps its intent; deferring
+>    avoids redundant churn until the map pass justifies it.
+> 2. Schema exclusion is **automatic**: `schema_eligible` is an allowlist
+>    (`_SCHEMA_ELIGIBLE_OPS` = relop/bool/cmp_chain only). New op_ids are simply absent →
+>    routed to the warm path. No code needed for §5's "schema-excluded" requirement.
+> 3. The existing `_is_signature_param` requires the `::`'s grandparent to be
+>    `K"function"`. Verified against JuliaSyntax: short-form `f(x)=x` IS `K"function"`
+>    (handled), but **`where`-clause methods are missed** — there the grandparent is
+>    `K"where"` (great-grandparent `K"function"`). v1's new helper fixes this for the new
+>    operators; `OP_DISPATCH_SWAP`'s own `where`-blindness is noted as an optional
+>    follow-up, out of v1 scope (don't churn certified code unsolicited).
+
+Four operators across both milestones, ranked by signal-per-implementation-cost:
 
 | # | Operator | Edit | Catches |
 |---|----------|------|---------|
