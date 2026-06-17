@@ -240,6 +240,21 @@ end
 
 end
 
+@testset "CLI parse — --blame flag" begin
+    # mirror of bin/gremlins-cli.jl _parse_args: --blame is a valueless bool
+    function has_blame(argv)
+        blame = false
+        i = 1
+        while i <= length(argv)
+            argv[i] == "--blame" && (blame = true)
+            i += 1
+        end
+        return blame
+    end
+    @test has_blame(["--pkg", "x", "--blame"])
+    @test !has_blame(["--pkg", "x"])
+end
+
 @testset "CLI — band classification" begin
 
     @testset "strong" begin

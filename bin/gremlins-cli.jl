@@ -36,6 +36,7 @@ struct ParsedArgs
     test_file::String
     warm::Bool
     schema::Bool                # --schema: opt-in compile-once schema mode
+    blame::Bool                 # --blame: opt-in survivor-coverage blame pass
     json_out::Union{String, Nothing}
     strong_threshold::Float64
     acceptable_threshold::Float64
@@ -54,6 +55,7 @@ function _parse_args(argv::Vector{String})::ParsedArgs
     test_file = "runtests.jl"
     warm = false
     schema = false
+    blame = false
     json_out = nothing
     strong = 0.80
     acceptable = 0.60
@@ -80,6 +82,8 @@ function _parse_args(argv::Vector{String})::ParsedArgs
             warm = true
         elseif arg == "--schema"
             schema = true
+        elseif arg == "--blame"
+            blame = true
         elseif arg == "--json"
             i += 1
             i > length(argv) && throw(ArgumentError("--json requires a value"))
@@ -119,7 +123,7 @@ function _parse_args(argv::Vector{String})::ParsedArgs
     acceptable > strong && throw(ArgumentError("--acceptable must be <= --strong"))
     (warm && schema) && throw(ArgumentError("--warm and --schema are mutually exclusive"))
 
-    return ParsedArgs(pkg, files, test_file, warm, schema, json_out, strong, acceptable, max_sites, indiff_ref)
+    return ParsedArgs(pkg, files, test_file, warm, schema, blame, json_out, strong, acceptable, max_sites, indiff_ref)
 end
 
 function _print_usage()
@@ -145,6 +149,7 @@ Options:
   --schema             Use compile-once schema mode for operator-swap sites
                        (faster than warm on eligible-heavy files; ineligible sites
                         fall back to warm automatically). Mutually exclusive with --warm.
+  --blame              After the run, name the test file(s) covering each surviving mutant (N extra coverage runs)
   --json <out.json>    Write JSON report to this file
   --strong <float>     Kill-rate threshold for "strong" band (default: 0.80)
   --acceptable <float> Kill-rate threshold for "acceptable" band (default: 0.60)
@@ -443,6 +448,18 @@ function main(argv::Vector{String})
     end
 
     Gremlins.print_summary(run_result)
+
+    # Opt-in survivor-coverage blame pass
+    if args.blame
+        elog("[gremlins] Running survivor-coverage blame (per-test coverage)...")
+        try
+            blame_report = Gremlins.blame_survivors(run_result, pkgdir;
+                test_dir=test_dir, test_file=test_file_bare)
+            Gremlins.render_blame(stdout, blame_report)
+        catch e
+            elog("WARNING: blame pass failed: $e")
+        end
+    end
 
     # Write JSON report if requested
     if !isnothing(args.json_out)

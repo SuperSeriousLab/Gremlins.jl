@@ -693,3 +693,7 @@ include("test_schema.jl")
 
 # ─── Feature D: dispatch-mutation operators (v1) ──────────────────────────────
 include("test_dispatch_operators.jl")
+
+# ─── Feature 2: survivor-coverage blame ──────────────────────────────────────
+include("test_blame.jl")
+include("blame_fixture_test.jl")
