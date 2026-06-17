@@ -17,6 +17,9 @@ using Gremlins
 
     rep = Gremlins.blame_survivors(result, pkg)
 
+    # no focused driver errored — so "not blamed" below means "didn't cover", not "crashed"
+    @test isempty(rep.failed_units)
+
     # (a) the weak file is blamed for a sign_of survivor
     @test haskey(rep.blamed, "test_weak.jl")
     @test any(r -> r.site.original == "<", rep.blamed["test_weak.jl"])
