@@ -2,10 +2,15 @@
 
 julia_version = "1.11.5"
 manifest_format = "2.0"
-project_hash = "cfb281242d82ffc54359c00ac9464ec2c61a7cfe"
+project_hash = "ac0d14679b52d581246dd275ed8f3e6ced404df3"
 
 [[deps.Base64]]
 uuid = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
+version = "1.11.0"
+
+[[deps.Dates]]
+deps = ["Printf"]
+uuid = "ade2ca70-3891-5945-98fb-dc099432e06a"
 version = "1.11.0"
 
 [[deps.JuliaSyntax]]
@@ -13,6 +18,20 @@ git-tree-sha1 = "0d4b3dab95018bcf3925204475693d9f09dc45b8"
 uuid = "70703baa-626e-46a2-a12c-08ffd08c73b4"
 version = "1.0.2"
 
+[[deps.Printf]]
+deps = ["Unicode"]
+uuid = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+version = "1.11.0"
+
 [[deps.SHA]]
 uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 version = "0.7.0"
+
+[[deps.TOML]]
+deps = ["Dates"]
+uuid = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
+version = "1.0.3"
+
+[[deps.Unicode]]
+uuid = "4ec0a83e-493e-50e2-b9ac-8f72acf5a8f5"
+version = "1.11.0"

@@ -447,7 +447,7 @@ function run_mutations_schema(
                 for (si, s) in enumerate(schema_runnable)
                     if !_schema_is_covered(cmap, s)
                         base = MutantResult(s, no_coverage, 0.0, "")
-                        push!(schema_results, WarmMutantResult(base, warm_ok, 0.0, 0.0))
+                        push!(schema_results, WarmMutantResult(base, warm_ok, 0.0))
                         _tally!(taxonomy, warm_ok)
                         continue
                     end
@@ -474,7 +474,7 @@ function run_mutations_schema(
                         continue
                     end
                     base = MutantResult(s, outcome, elapsed, errmsg)
-                    push!(schema_results, WarmMutantResult(base, warm_ok, elapsed, 0.0))
+                    push!(schema_results, WarmMutantResult(base, warm_ok, elapsed))
                     _tally!(taxonomy, warm_ok)
                     schema_ran += 1
                     verbose && println("[gremlins/schema] [$(s.id[1:8])] schema → $outcome ($(round(elapsed,digits=3))s)")

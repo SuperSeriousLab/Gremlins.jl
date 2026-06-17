@@ -3,6 +3,7 @@ module Gremlins
 using JuliaSyntax
 using SHA
 using Base64
+using TOML
 
 include("operators.jl")
 include("equivalence.jl")
@@ -118,7 +119,7 @@ export report_schema_markdown
 
 # Warm-worker pool (M2)
 export FallbackReason
-export warm_ok, fallback_macro, fallback_typedef, fallback_const, fallback_evalerr, fallback_pollution, fallback_schema_ineligible
+export warm_ok, fallback_macro, fallback_typedef, fallback_const, fallback_evalerr, fallback_schema_ineligible
 export WarmEligibility
 export WarmMutantResult
 export WarmRunResult

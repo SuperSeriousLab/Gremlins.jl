@@ -149,10 +149,9 @@ end
     s3 = _surv("src/b.jl", 30, "3333333333333333")  # covered by nobody -> unattributed
     survivors = [s1, s2, s3]
 
-    pkg = "/fake"
     maps = Dict(
-        "t1.jl" => CoverageMap(Dict("src/a.jl" => Set([10, 20])), pkg),
-        "t2.jl" => CoverageMap(Dict("src/a.jl" => Set([20])), pkg),
+        "t1.jl" => CoverageMap(Dict("src/a.jl" => Set([10, 20]))),
+        "t2.jl" => CoverageMap(Dict("src/a.jl" => Set([20]))),
     )
     rep = _join_blame(survivors, maps, ["t_broken.jl"])
 

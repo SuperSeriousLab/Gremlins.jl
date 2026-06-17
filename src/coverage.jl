@@ -27,7 +27,6 @@ that were executed during the baseline test run.
 struct CoverageMap
     # relpath (forward-slash, relative to pkgdir) → Set{Int} of covered lines
     data::Dict{String, Set{Int}}
-    pkgdir::String
 end
 
 function Base.show(io::IO, cm::CoverageMap)
@@ -154,9 +153,6 @@ Build and return a CoverageMap.
 """
 function _collect_coverage(pkgdir::AbstractString)::CoverageMap
     data = Dict{String, Set{Int}}()
-    src_dir = joinpath(pkgdir, "src")
-    isdir(src_dir) || return CoverageMap(data, pkgdir)
-
     for (dirpath, _, filenames) in walkdir(pkgdir)
         for fn in filenames
             # Julia coverage files: <source>.jl.<pid>.cov  or  <source>.jl.cov
@@ -188,7 +184,7 @@ function _collect_coverage(pkgdir::AbstractString)::CoverageMap
         end
     end
 
-    return CoverageMap(data, pkgdir)
+    return CoverageMap(data)
 end
 
 # ─── Shadow remap ────────────────────────────────────────────────────────────
@@ -220,7 +216,7 @@ function _remap_cmap_to_real(
         existing = get(new_data, real_rel, Set{Int}())
         new_data[real_rel] = union(existing, lines)
     end
-    return CoverageMap(new_data, pkgdir)
+    return CoverageMap(new_data)
 end
 
 # ─── Query helpers ────────────────────────────────────────────────────────────

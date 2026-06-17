@@ -47,7 +47,6 @@ struct WarmMutantResult
     base::MutantResult         # underlying outcome (same enum as cold path)
     fallback_reason::FallbackReason  # warm_ok = ran warm; else = cold fallback cause
     warm_elapsed::Float64      # 0.0 if ran cold
-    cold_elapsed::Float64      # 0.0 if ran warm (or matched warm)
 end
 
 # ─── WarmRunResult ─────────────────────────────────────────────────────────────
@@ -78,7 +77,6 @@ end
                        timeout_multiplier=3.0,
                        coverage_overhead=2.5,
                        mutant_timeout=nothing,
-                       n_workers=nothing,    # accepted for API compat; warm uses 1 worker
                        verbose=false,
                        cache=nothing,
                        pkg_name=nothing) -> WarmRunResult
@@ -124,7 +122,6 @@ function run_mutations_warm(
     timeout_multiplier::Float64  = 3.0,
     coverage_overhead::Float64   = 2.5,
     mutant_timeout::Union{Float64, Nothing} = nothing,
-    n_workers::Union{Int, Nothing} = nothing,  # API compat — warm uses 1 worker
     verbose::Bool                = false,
     cache::Union{MutantCache, Nothing} = nothing,
     pkg_name::Union{String, Nothing} = nothing,
@@ -161,8 +158,6 @@ function run_mutations_warm(
                     "derived mutant timeout $(round(derived_timeout, digits=1))s")
         end
     end
-    actual_mutant_timeout = derived_timeout
-
     # Sort sites deterministically (I2)
     sorted_sites = sort(sites, by = s -> s.id)
 
@@ -202,7 +197,7 @@ function run_mutations_warm(
                     flush(stdout)
                 end
                 base = MutantResult(site, no_coverage, 0.0, "")
-                wr = WarmMutantResult(base, warm_ok, 0.0, 0.0)
+                wr = WarmMutantResult(base, warm_ok, 0.0)
                 push!(warm_results, wr)
                 _tally!(taxonomy, warm_ok)
                 continue
@@ -216,7 +211,7 @@ function run_mutations_warm(
                 if !isnothing(cached)
                     cache_hits += 1
                     base = MutantResult(site, cached.outcome, cached.elapsed, "")
-                    wr = WarmMutantResult(base, warm_ok, 0.0, 0.0)
+                    wr = WarmMutantResult(base, warm_ok, 0.0)
                     push!(warm_results, wr)
                     if verbose
                         println("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… cache_hit ($(cached.outcome))")
@@ -235,9 +230,9 @@ function run_mutations_warm(
                     println("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… cold ($(elig.reason))")
                     flush(stdout)
                 end
-                cold_outcome, cold_elapsed, cold_err = _run_cold_single(site, pkgdir, shadow, shadow_test_path, actual_mutant_timeout)
+                cold_outcome, cold_elapsed, cold_err = _run_cold_single(site, pkgdir, shadow, shadow_test_path, derived_timeout)
                 base = MutantResult(site, cold_outcome, cold_elapsed, cold_err)
-                wr = WarmMutantResult(base, elig.reason, 0.0, cold_elapsed)
+                wr = WarmMutantResult(base, elig.reason, 0.0)
                 push!(warm_results, wr)
                 _tally!(taxonomy, elig.reason)
                 if !isnothing(cache)
@@ -253,7 +248,7 @@ function run_mutations_warm(
                 _find_abs_path_or_throw(pkgdir, site)
             catch e
                 base = MutantResult(site, error, 0.0, "cannot locate source: $e")
-                wr = WarmMutantResult(base, fallback_evalerr, 0.0, 0.0)
+                wr = WarmMutantResult(base, fallback_evalerr, 0.0)
                 push!(warm_results, wr)
                 _tally!(taxonomy, fallback_evalerr)
                 continue
@@ -263,7 +258,7 @@ function run_mutations_warm(
                 read(abs_path, String)
             catch e
                 base = MutantResult(site, error, 0.0, "cannot read source: $e")
-                wr = WarmMutantResult(base, fallback_evalerr, 0.0, 0.0)
+                wr = WarmMutantResult(base, fallback_evalerr, 0.0)
                 push!(warm_results, wr)
                 _tally!(taxonomy, fallback_evalerr)
                 continue
@@ -273,7 +268,7 @@ function run_mutations_warm(
                 apply(site, src_content)
             catch e
                 base = MutantResult(site, error, 0.0, "apply failed: $e")
-                wr = WarmMutantResult(base, fallback_evalerr, 0.0, 0.0)
+                wr = WarmMutantResult(base, fallback_evalerr, 0.0)
                 push!(warm_results, wr)
                 _tally!(taxonomy, fallback_evalerr)
                 continue
@@ -301,7 +296,7 @@ function run_mutations_warm(
                 end
 
                 outcome, warm_elapsed, errmsg, fallback_r = _run_mutant_via_worker(
-                    worker, abs_path, mutated_content, src_content, site, warm_test_path, actual_mutant_timeout
+                    worker, abs_path, mutated_content, src_content, site, warm_test_path, derived_timeout
                 )
 
                 if fallback_r == fallback_evalerr
@@ -320,9 +315,9 @@ function run_mutations_warm(
                             verbose && println("[gremlins/warm] WARNING: worker re-spawn after fallback failed")
                         end
                     end
-                    cold_outcome, cold_elapsed, cold_err = _run_cold_single(site, pkgdir, shadow, shadow_test_path, actual_mutant_timeout)
+                    cold_outcome, cold_elapsed, cold_err = _run_cold_single(site, pkgdir, shadow, shadow_test_path, derived_timeout)
                     base = MutantResult(site, cold_outcome, cold_elapsed, cold_err)
-                    wr = WarmMutantResult(base, fallback_evalerr, 0.0, cold_elapsed)
+                    wr = WarmMutantResult(base, fallback_evalerr, 0.0)
                     push!(warm_results, wr)
                     _tally!(taxonomy, fallback_evalerr)
                     if verbose
@@ -337,7 +332,7 @@ function run_mutations_warm(
 
                 # Warm execution succeeded
                 base = MutantResult(site, outcome, warm_elapsed, errmsg)
-                wr = WarmMutantResult(base, warm_ok, warm_elapsed, 0.0)
+                wr = WarmMutantResult(base, warm_ok, warm_elapsed)
                 push!(warm_results, wr)
                 push!(warm_ran, wr)
                 _tally!(taxonomy, warm_ok)
@@ -357,9 +352,9 @@ function run_mutations_warm(
                     print("[gremlins/warm] [$i/$(length(sorted_sites))] $(site.id[1:8])… cold (no_worker) ")
                     flush(stdout)
                 end
-                cold_outcome, cold_elapsed, cold_err = _run_cold_single(site, pkgdir, shadow, shadow_test_path, actual_mutant_timeout)
+                cold_outcome, cold_elapsed, cold_err = _run_cold_single(site, pkgdir, shadow, shadow_test_path, derived_timeout)
                 base = MutantResult(site, cold_outcome, cold_elapsed, cold_err)
-                wr = WarmMutantResult(base, fallback_evalerr, 0.0, cold_elapsed)
+                wr = WarmMutantResult(base, fallback_evalerr, 0.0)
                 push!(warm_results, wr)
                 _tally!(taxonomy, fallback_evalerr)
                 if verbose
@@ -391,7 +386,7 @@ function run_mutations_warm(
         for wr in sample
             site = wr.base.site
             cold_outcome2, _, _ = try
-                _run_cold_single(site, pkgdir, shadow, shadow_test_path, actual_mutant_timeout)
+                _run_cold_single(site, pkgdir, shadow, shadow_test_path, derived_timeout)
             catch
                 continue
             end
@@ -510,15 +505,13 @@ end
 """
     _infer_pkg_name(pkgdir) -> Union{String, Nothing}
 
-Read the package name from Project.toml in pkgdir.
+Read the package name from Project.toml in pkgdir using the stdlib TOML parser.
 """
 function _infer_pkg_name(pkgdir::AbstractString)::Union{String, Nothing}
     toml_path = joinpath(pkgdir, "Project.toml")
     isfile(toml_path) || return nothing
-    content = try; read(toml_path, String); catch; return nothing; end
-    m = match(r"""^name\s*=\s*"([^"]+)"""m, content)
-    m === nothing && return nothing
-    return m.captures[1]
+    t = try; TOML.parsefile(toml_path); catch; return nothing; end
+    return get(t, "name", nothing)
 end
 
 """
@@ -556,7 +549,6 @@ end
                 mutant_timeout=nothing,
                 max_mutants=nothing,
                 files=nothing,
-                n_workers=nothing,
                 verbose=false,
                 use_cache=true,
                 pkg_name=nothing) -> WarmRunResult
@@ -588,7 +580,6 @@ function mutate_warm(
     mutant_timeout::Union{Float64, Nothing} = nothing,
     max_mutants::Union{Int, Nothing} = nothing,
     files::Union{Vector{String}, Nothing} = nothing,
-    n_workers::Union{Int, Nothing} = nothing,
     verbose::Bool                 = false,
     use_cache::Bool               = true,
     pkg_name::Union{String, Nothing} = nothing,
@@ -624,7 +615,6 @@ function mutate_warm(
         timeout_multiplier=timeout_multiplier,
         coverage_overhead=coverage_overhead,
         mutant_timeout=mutant_timeout,
-        n_workers=n_workers,
         verbose=verbose,
         cache=cache,
         pkg_name=pkg_name,

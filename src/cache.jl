@@ -52,7 +52,7 @@ Stable cache key: SHA256(source file bytes) + mutant_id + GREMLINS_VERSION.
 Not mtime-based.
 """
 function _cache_key(src_content::AbstractString, mutant_id::AbstractString)::String
-    file_hash = join(string(b, base=16, pad=2) for b in sha256(src_content))
+    file_hash = bytes2hex(sha256(src_content))
     return "sha256:$(file_hash):mid:$(mutant_id):ver:$(GREMLINS_VERSION)"
 end
 

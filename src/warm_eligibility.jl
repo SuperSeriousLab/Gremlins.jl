@@ -17,7 +17,6 @@ Values:
 - `fallback_typedef`  — site is inside struct/abstract/primitive type def (static)
 - `fallback_const`    — site is inside a const global assignment (static)
 - `fallback_evalerr`  — warm eval threw an exception (dynamic)
-- `fallback_pollution` — warm eval left state detectable by subsequent tests (reserved)
 """
 @enum FallbackReason begin
     warm_ok
@@ -25,7 +24,6 @@ Values:
     fallback_typedef
     fallback_const
     fallback_evalerr
-    fallback_pollution
     fallback_schema_ineligible
 end
 

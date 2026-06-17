@@ -69,7 +69,7 @@ struct RunResult
 end
 
 function Base.show(io::IO, r::RunResult)
-    s = _score(r)
+    s = mutation_score(r)
     print(io, "RunResult($(length(r.results)) mutants, score=$(round(s*100, digits=1))%)")
 end
 
@@ -82,10 +82,6 @@ Mutation score = killed / (total - no_coverage - error).
 Returns NaN if the denominator is 0.
 """
 function mutation_score(r::RunResult)::Float64
-    return _score(r)
-end
-
-function _score(r::RunResult)::Float64
     n_killed   = count(x -> x.outcome == killed,      r.results)
     n_nocov    = count(x -> x.outcome == no_coverage,  r.results)
     n_err      = count(x -> x.outcome == error,        r.results)
@@ -174,8 +170,6 @@ function run_mutations(
                     "derived mutant timeout $(round(derived_timeout, digits=1))s")
         end
     end
-    actual_mutant_timeout = derived_timeout
-
     # Sort sites deterministically by id
     sorted_sites = sort(sites, by = s -> s.id)
 
@@ -241,7 +235,7 @@ function run_mutations(
 
                 # 4. Run test subprocess against shadow project
                 cmd = Cmd([jl, "--project=$shadow", shadow_test_path])
-                exit_code, _ = _run_with_timeout(cmd, actual_mutant_timeout)
+                exit_code, _ = _run_with_timeout(cmd, derived_timeout)
 
                 if exit_code == :timeout
                     outcome = timeout

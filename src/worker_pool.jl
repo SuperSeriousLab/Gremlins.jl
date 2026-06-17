@@ -117,20 +117,6 @@ function _spawn_worker(
 end
 
 """
-    _line_available(io, timeout_secs) -> Bool
-
-Non-blocking check: is a line available on `io` within `timeout_secs`?
-"""
-function _line_available(io::IO, timeout_secs::Float64)::Bool
-    deadline = time() + timeout_secs
-    while time() < deadline
-        bytesavailable(io) > 0 && return true
-        sleep(0.01)
-    end
-    return false
-end
-
-"""
     _send_request(handle, line) -> Union{String, Nothing}
 
 Write a JSON-Lines request to the worker and return the response line.
@@ -198,18 +184,6 @@ function _kill_worker!(handle::WorkerHandle)
     try; close(handle.pipe_in.out); catch; end
     try; close(handle.pipe_out.in); catch; end
     try; close(handle.pipe_out.out); catch; end
-end
-
-"""
-    _ping_worker(handle) -> Bool
-
-Check that the worker is alive and responsive.
-"""
-function _ping_worker(handle::WorkerHandle)::Bool
-    handle.alive || return false
-    resp = _send_request(handle, "{\"cmd\":\"ping\"}", 10.0)
-    resp === nothing && return false
-    return occursin("\"ok\":true", resp)
 end
 
 # ─── Per-mutant warm execution via worker ────────────────────────────────────
