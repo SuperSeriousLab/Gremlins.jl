@@ -67,6 +67,12 @@ hard error — the affected schema sites are NOT silently demoted to warm.
 will always pass I6. Failure indicates a real instrumentation correctness problem
 requiring investigation (not a production incident to paper over).
 
+### I7 — Dispatch operators are warm-path only
+- Dispatch operators (`:dispatch_type_swap`, `:union_drop`, `:where_relax`) are
+  warm-path only: they are absent from `_SCHEMA_ELIGIBLE_OPS`, so `schema_eligible`
+  routes them to the warm runner. A changed signature / dropped bound is resolved at
+  definition+dispatch time and cannot be expressed as a schema runtime branch.
+
 ## Adversarial surface
 - Malicious/weird source (Unicode identifiers, nested string macros, `quote`
   blocks) must not panic discovery — skip-with-note, never crash.

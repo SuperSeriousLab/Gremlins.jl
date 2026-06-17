@@ -119,4 +119,16 @@ end
     @test isempty(_sites("const V = Vector{T} where T<:Real\n", OP_WHERE_RELAX))
 end
 
+
+# ── Determinism (invariant I2) ──
+@testset "Dispatch ops — deterministic enumeration" begin
+    src = "fu(x::Union{Int,String,Float64}) = 1\ngw(y::T) where T<:Real = y\n"
+    ops = [OP_UNION_DROP, OP_WHERE_RELAX]
+    run1 = mktempdir() do d; p=joinpath(d,"a.jl"); write(p,src); discover_file(p; root=d, operators=ops); end
+    run2 = mktempdir() do d; p=joinpath(d,"a.jl"); write(p,src); discover_file(p; root=d, operators=ops); end
+    @test length(run1) == 4   # 3 union members + 1 where-bound
+    @test [s.op_id for s in run1] == [s.op_id for s in run2]
+    @test [s.replacement for s in run1] == [s.replacement for s in run2]
+end
+
 end  # @testset
