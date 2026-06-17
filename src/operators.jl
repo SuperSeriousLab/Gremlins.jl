@@ -485,6 +485,43 @@ const OP_UNION_DROP = MutationOperator(
     end,
 )
 
+# ─── 9c. Where-bound relax ────────────────────────────────────────────────────
+# JULIA-UNIQUE dispatch mutation. `f(x::T) where T<:Real` constrains the type
+# parameter. Drop the bound (`where T`) → the method accepts any T. A SURVIVING
+# mutant means the parametric bound is never exercised — a dispatch-coverage gap.
+# v1 handles upper-bound `<:` only; lower-bound `>:` and nested `where` are out of
+# scope. Static + falsifiable; opt-in.
+
+"""True iff `node` is a `<:` upper-bound constraint inside a method-signature
+`where` clause — either directly (`where T<:Real`) or inside the brace list
+(`where {T<:Real, ...}`). The enclosing `where`'s parent must be the
+`K"function"` def, so non-method `where` (type aliases, struct params) is excluded."""
+function _is_signature_where_bound(node::JuliaSyntax.SyntaxNode)::Bool
+    JuliaSyntax.kind(node) == JuliaSyntax.K"<:" || return false
+    cs = JuliaSyntax.children(node)
+    (!isnothing(cs) && length(cs) == 2) || return false
+    p = node.parent
+    isnothing(p) && return false
+    if JuliaSyntax.kind(p) == JuliaSyntax.K"where"
+        gp = p.parent
+        return !isnothing(gp) && JuliaSyntax.kind(gp) == JuliaSyntax.K"function"
+    elseif JuliaSyntax.kind(p) == JuliaSyntax.K"braces"
+        gp = p.parent
+        (!isnothing(gp) && JuliaSyntax.kind(gp) == JuliaSyntax.K"where") || return false
+        ggp = gp.parent
+        return !isnothing(ggp) && JuliaSyntax.kind(ggp) == JuliaSyntax.K"function"
+    end
+    return false
+end
+
+const OP_WHERE_RELAX = MutationOperator(
+    :where_relax,
+    "dispatch: drop a where-bound",
+    (node, src) -> _is_signature_where_bound(node) && !_is_inside_macro_def(node),
+    # `T<:Real` → `T` (the constraint variable, children[1]).
+    (node, src) -> node_text(JuliaSyntax.children(node)[1], src),
+)
+
 # ─── 10. Comparison-chain operator ───────────────────────────────────────────
 # `a < b < c` parses as K"comparison" with children [a, <, b, <, c]; the binary
 # relational ops (K"call") never reach it. Swap one comparator per mutant.

@@ -86,4 +86,37 @@ end
     @test isempty(_sites("k(x::Vector{Int}) = x\n", OP_UNION_DROP))
 end
 
+
+# ── OP_WHERE_RELAX ──
+@testset "OP_WHERE_RELAX — enumeration + falsifiability" begin
+    src = "gwr(v::AbstractVector{T}) where T<:Integer = sum(v)\n"
+    sites = _sites(src, OP_WHERE_RELAX)
+    @test length(sites) == 1
+    s = sites[1]
+    @test s.op_id == :where_relax
+    @test s.original    == "T<:Integer"
+    @test s.replacement == "T"
+    @test revert(s, apply(s, src)) == src
+
+    # Falsifiability: original rejects floats (Integer bound); relaxed accepts
+    # them → a `@test_throws MethodError` on floats no longer throws → killed.
+    mutated = apply(s, src)
+    g_orig = _eval_fresh(src, :gwr)
+    g_mut  = _eval_fresh(mutated, :gwr)
+    @test g_orig([1, 2]) == 3
+    @test_throws MethodError g_orig([1.0, 2.0])
+    @test g_mut([1.0, 2.0]) == 3.0   # bound dropped → now dispatches → killed
+end
+
+# ── OP_WHERE_RELAX — multi-param where + negative cases ──
+@testset "OP_WHERE_RELAX — braces + negatives" begin
+    # `where {T<:Real, N}`: the one bounded param yields one site.
+    multi = _sites("fm(x::T, y::Val{N}) where {T<:Real, N} = x\n", OP_WHERE_RELAX)
+    @test length(multi) == 1
+    @test multi[1].original == "T<:Real"
+    @test multi[1].replacement == "T"
+    # A `where` in a non-method (type-alias) position must NOT match.
+    @test isempty(_sites("const V = Vector{T} where T<:Real\n", OP_WHERE_RELAX))
+end
+
 end  # @testset
