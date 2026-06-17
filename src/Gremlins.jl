@@ -20,6 +20,7 @@ include("schema_instrument.jl")  # instrument_function, disjoint_eligible, _sche
 include("schema_agreement.jl")   # AgreementResult, schema_warm_agreement, _check_agreement
 include("schema.jl")
 include("report.jl")
+include("blame.jl")
 
 # Types
 export MutationError
