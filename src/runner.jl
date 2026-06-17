@@ -182,6 +182,10 @@ function run_mutations(
     shadow = _make_shadow(pkgdir)
     verbose && println("[gremlins] Shadow copy at: $shadow")
 
+    # Augment shadow with test-only deps so `--project=<shadow>` can load them.
+    # No-op (returns false) when the package has no non-stdlib test deps.
+    _augment_shadow_with_test_deps(pkgdir, shadow)
+
     try
         shadow_test_path = joinpath(shadow, test_dir, test_file)
 

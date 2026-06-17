@@ -137,4 +137,199 @@ function _shadow_abs_path(
     return joinpath(shadow_dir, rel)
 end
 
+# ─── Test-dep augmentation ────────────────────────────────────────────────────
+
+"""
+    _augment_shadow_with_test_deps(pkgdir, shadow_dir) -> Bool
+
+Merge non-stdlib test-only deps into the shadow's Project.toml so that
+`julia --project=<shadow>` can load them (fixing GitHub #2/#3).
+
+`Pkg.test()` resolves a *combined* environment: package deps + test/Project.toml
+deps together. Plain `julia --project=<shadow>` only sees the package's main
+Project.toml, so any dep declared only in `test/Project.toml` is missing.
+
+Sources checked (in priority order):
+  1. `<pkgdir>/test/Project.toml` — modern style (`[deps]`, optional `[sources]`,
+     optional `[compat]`).
+  2. `<pkgdir>/Project.toml` legacy `[extras]` + `[targets]` — deps listed under
+     the `test` target are also merged.
+
+Only non-stdlib, non-self deps are merged (stdlib packages are always on the
+LOAD_PATH and do not need to appear in the shadow's Project.toml).
+
+After merging, runs `Pkg.resolve()` + `Pkg.instantiate()` with the shadow as the
+active project so the shadow Manifest gains the test deps.  This may trigger a
+one-time network fetch (e.g. downloading `Example.jl`) — acceptable at setup
+time; subsequent runs re-use the global package cache.
+
+Returns `true` if any deps were added (i.e. the shadow Project.toml was
+modified), `false` if the package has no non-stdlib test-only deps (no-op fast
+path: no Pkg activation, no Manifest churn).
+
+The augmentation is idempotent: deps already present in the shadow Project.toml
+are never duplicated.  The shadow is disposable, so merging test deps into its
+Project.toml is always safe.
+
+Throws `MutationError` (typed) if the shadow's Project.toml is missing or
+unreadable (should never happen — `_make_shadow` always copies it).
+"""
+function _augment_shadow_with_test_deps(
+    pkgdir::AbstractString,
+    shadow_dir::AbstractString,
+)::Bool
+    pkgdir     = abspath(pkgdir)
+    shadow_dir = abspath(shadow_dir)
+
+    shadow_proj_path = joinpath(shadow_dir, "Project.toml")
+    isfile(shadow_proj_path) || throw(MutationError(
+        "_augment_shadow_with_test_deps: shadow Project.toml not found at '$shadow_proj_path'"
+    ))
+
+    shadow_proj = try
+        TOML.parsefile(shadow_proj_path)
+    catch e
+        throw(MutationError(
+            "_augment_shadow_with_test_deps: cannot parse shadow Project.toml: $e"
+        ))
+    end
+
+    pkg_uuid = get(shadow_proj, "uuid", "")
+
+    # Build the set of stdlib UUIDs dynamically (version-agnostic).
+    stdlib_uuids = _stdlib_uuids()
+
+    # ── Collect test deps from test/Project.toml (modern style) ──────────────
+    new_deps    = Dict{String, String}()   # name → uuid
+    new_sources = Dict{String, Any}()     # name → source spec (path/url/rev)
+    new_compat  = Dict{String, Any}()     # key  → version spec
+
+    test_proj_path = joinpath(pkgdir, "test", "Project.toml")
+    if isfile(test_proj_path)
+        test_proj = try
+            TOML.parsefile(test_proj_path)
+        catch
+            Dict{String, Any}()  # malformed test/Project.toml → skip silently
+        end
+
+        for (name, uuid) in get(test_proj, "deps", Dict{String, Any}())
+            uuid isa String || continue
+            uuid in stdlib_uuids && continue   # stdlib — always available
+            uuid == pkg_uuid    && continue   # self-dep — already the project
+            new_deps[name] = uuid
+        end
+
+        # [sources] — Julia 1.11+ path/url-based deps (hermetic local packages)
+        for (name, spec) in get(test_proj, "sources", Dict{String, Any}())
+            new_sources[name] = spec
+        end
+
+        # [compat] — non-conflicting entries only
+        for (k, v) in get(test_proj, "compat", Dict{String, Any}())
+            new_compat[k] = v
+        end
+    end
+
+    # ── Collect test deps from legacy [extras] + [targets] ───────────────────
+    # (present in the MAIN Project.toml, not test/)
+    main_proj_path = joinpath(pkgdir, "Project.toml")
+    if isfile(main_proj_path)
+        main_proj = try
+            TOML.parsefile(main_proj_path)
+        catch
+            Dict{String, Any}()
+        end
+        extras  = get(main_proj, "extras",  Dict{String, Any}())
+        targets = get(main_proj, "targets", Dict{String, Any}())
+        test_target_names = Set{String}(get(targets, "test", String[]))
+        for (name, uuid) in extras
+            name in test_target_names || continue
+            uuid isa String || continue
+            uuid in stdlib_uuids && continue
+            uuid == pkg_uuid    && continue
+            new_deps[name] = uuid
+        end
+    end
+
+    # ── Fast-path: nothing to add ─────────────────────────────────────────────
+    isempty(new_deps) && isempty(new_sources) && return false
+
+    # ── Merge into shadow Project.toml ────────────────────────────────────────
+    existing_deps    = get(shadow_proj, "deps",    Dict{String, Any}())
+    existing_sources = get(shadow_proj, "sources", Dict{String, Any}())
+    existing_compat  = get(shadow_proj, "compat",  Dict{String, Any}())
+
+    actually_added = false
+
+    for (name, uuid) in new_deps
+        if !haskey(existing_deps, name)
+            existing_deps[name] = uuid
+            actually_added = true
+        end
+    end
+    if !isempty(existing_deps)
+        shadow_proj["deps"] = existing_deps
+    end
+
+    for (name, spec) in new_sources
+        if !haskey(existing_sources, name)
+            existing_sources[name] = spec
+            actually_added = true
+        end
+    end
+    if !isempty(existing_sources)
+        shadow_proj["sources"] = existing_sources
+    end
+
+    for (k, v) in new_compat
+        !haskey(existing_compat, k) && (existing_compat[k] = v)
+    end
+    if !isempty(existing_compat)
+        shadow_proj["compat"] = existing_compat
+    end
+
+    actually_added || return false  # all were already present — skip Pkg work
+
+    open(shadow_proj_path, "w") do io
+        TOML.print(io, shadow_proj)
+    end
+
+    # ── Resolve + instantiate so shadow Manifest gains the new deps ───────────
+    prev_active = Base.active_project()
+    try
+        Pkg.activate(shadow_dir; io=devnull)
+        Pkg.resolve(;     io=devnull)
+        Pkg.instantiate(; io=devnull)
+    catch e
+        throw(MutationError(
+            "_augment_shadow_with_test_deps: Pkg.resolve/instantiate failed " *
+            "while merging test deps into shadow — $e"
+        ))
+    finally
+        # Restore caller's active project (defensive: Pkg.activate is process-global)
+        prev_active === nothing || Pkg.activate(prev_active; io=devnull)
+    end
+
+    return true
+end
+
+"""
+    _stdlib_uuids() -> Set{String}
+
+Return the set of UUIDs for all Julia standard-library packages.
+Uses `Sys.STDLIB` (version-agnostic) to scan each stdlib's Project.toml.
+Result is computed once; callers may cache externally if performance matters.
+"""
+function _stdlib_uuids()::Set{String}
+    uuids = Set{String}()
+    for name in readdir(Sys.STDLIB)
+        p = joinpath(Sys.STDLIB, name, "Project.toml")
+        isfile(p) || continue
+        d = try TOML.parsefile(p) catch; continue end
+        uuid = get(d, "uuid", nothing)
+        uuid isa String && push!(uuids, uuid)
+    end
+    return uuids
+end
+
 # Note: _remap_cmap_to_real is defined in coverage.jl (after CoverageMap is declared)

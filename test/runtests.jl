@@ -697,3 +697,6 @@ include("test_dispatch_operators.jl")
 # ─── Feature 2: survivor-coverage blame ──────────────────────────────────────
 include("test_blame.jl")
 include("blame_fixture_test.jl")
+
+# ─── Bug fix: test-env deps (#2/#3) ──────────────────────────────────────────
+include("test_testenv.jl")

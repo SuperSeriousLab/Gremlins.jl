@@ -4,6 +4,7 @@ using JuliaSyntax
 using SHA
 using Base64
 using TOML
+import Pkg
 
 include("operators.jl")
 include("equivalence.jl")
