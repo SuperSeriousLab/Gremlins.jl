@@ -37,6 +37,7 @@ end
             cs = children(n); cs === nothing || foreach(walk, cs)
         end
         walk(t)
+        @assert !isnothing(found[]) "no ::x parameter node found in: $code"
         found[]
     end
     f = Gremlins._is_dispatch_sig_param
@@ -129,6 +130,9 @@ end
     @test length(run1) == 4   # 3 union members + 1 where-bound
     @test [s.op_id for s in run1] == [s.op_id for s in run2]
     @test [s.replacement for s in run1] == [s.replacement for s in run2]
+    # I7 regression guard: dispatch ops are warm-path only (absent from
+    # _SCHEMA_ELIGIBLE_OPS → schema_eligible must return false).
+    @test all(s -> !Gremlins.schema_eligible(s), run1)
 end
 
 end  # @testset
