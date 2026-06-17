@@ -40,3 +40,15 @@ julia --project -e 'using Gremlins; Gremlins.discover("src") .|> println'
 - No mtime-based caching (Sisyphus lesson — git checkout refreshes mtimes).
 - Don't claim "verified" without pasted runnable output (campaign rule 2026-06-04).
 - No mutation of `test/` files — source dirs only.
+
+## Workflow
+
+- **Develop on Forgejo.** Feature work: branch, implement, merge to `master` locally
+  (no Forgejo PR — solo repo, the PR ritual is theatre), push `master` to the
+  `forgejo` remote as the canonical dev mirror.
+- **Release via GitHub.** When a new version is ready to submit, push to the `github`
+  remote (`SuperSeriousLab/Gremlins.jl`) — that triggers the auto-merge / registry
+  registration flow. GitHub push = release, not routine dev. Don't push to `github`
+  for in-progress work.
+- Registration (Julia General registry) is a deliberate, explicit release step — see
+  the General-registry note in workspace memory; never trigger it just to finish a branch.
