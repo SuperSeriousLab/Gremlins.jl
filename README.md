@@ -175,6 +175,82 @@ Quick setup:
 
 Exit codes: `0` = strong or acceptable, `1` = weak (below acceptable threshold), `2` = infrastructure error.
 
+## Custom operators
+
+You can run a subset of the built-in operators or supply entirely custom ones via
+the `operators` keyword argument, available on `mutate`, `mutate_warm`, and
+`discover`.
+
+### Running a subset of `DEFAULT_OPERATORS`
+
+```julia
+using Gremlins
+
+# Only test relational-operator mutations
+result = mutate("path/to/MyPkg";
+    operators = [OP_LT_TO_LE, OP_LE_TO_LT, OP_GT_TO_GE, OP_GE_TO_GT,
+                 OP_EQ_TO_NEQ, OP_NEQ_TO_EQ])
+print_summary(result)
+```
+
+### The `MutationOperator` struct
+
+```julia
+struct MutationOperator
+    id::Symbol        # stable Symbol used in the mutant hash (must be unique across your set)
+    name::String      # human-readable label shown in reports
+    matcher::Function # (node::SyntaxNode, src::String) -> Bool — true iff this node should be mutated
+    replacer::Function # (node::SyntaxNode, src::String) -> String — returns the replacement text
+end
+```
+
+- **`matcher`** receives a `JuliaSyntax.SyntaxNode` and the full source text of the
+  file as a `String`. Return `true` when the node is a candidate for mutation.
+- **`replacer`** receives the same node and source. Return a `String` with the
+  replacement text that will be spliced into `site.byte_range`. The splice covers
+  the exact bytes of the matched node.
+- Both functions are called only during static discovery — no code is executed.
+
+### Worked example — negate every boolean literal
+
+This operator flips every `true` to `false` and every `false` to `true` in a
+single combined operator (equivalent to `OP_TRUE_TO_FALSE` + `OP_FALSE_TO_TRUE`
+merged):
+
+```julia
+using Gremlins
+using JuliaSyntax
+
+OP_FLIP_BOOL = MutationOperator(
+    :flip_bool,
+    "literal: flip bool",
+    # matcher: any Bool literal leaf
+    (node, src) -> JuliaSyntax.is_leaf(node) &&
+                   JuliaSyntax.kind(node) == JuliaSyntax.K"Bool",
+    # replacer: invert the value
+    (node, src) -> node.val === true ? "false" : "true",
+)
+
+result = mutate("path/to/MyPkg"; operators = [OP_FLIP_BOOL])
+print_summary(result)
+```
+
+The `id` field (`:flip_bool`) must be unique within the operator set you pass —
+it is part of the stable mutant-ID hash. Use a distinct symbol for each operator.
+
+### Opt-in advanced operators
+
+Several powerful operators are not in `DEFAULT_OPERATORS` and must be opted in
+explicitly (they are too noisy or too slow for default runs):
+
+```julia
+# Julia-unique: constant-pool swap (replace a literal with another literal in the same function)
+result = mutate("path/to/MyPkg"; operators = [OP_CONST_POOL])
+
+# Julia-unique: dispatch-contract mutations (signature type swap, union-member drop, where-bound relax)
+result = mutate("path/to/MyPkg"; operators = [OP_DISPATCH_SWAP, OP_UNION_DROP, OP_WHERE_RELAX])
+```
+
 ## Limitations
 
 **const-site coverage blind spot** — mutations inside `const` global assignments
