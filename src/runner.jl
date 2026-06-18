@@ -360,7 +360,9 @@ function run_mutations(
                     @async begin
                         # Check out a shadow (blocks until one is free).
                         local sh = take!(shadow_ch)
-                        local outcome = survived
+                        # Initialize outcome/err_msg before any possible return so
+                        # the outer finally can always write a valid MutantResult.
+                        local outcome = error
                         local err_msg = ""
                         local mutant_t0 = time()
 
@@ -373,7 +375,7 @@ function run_mutations(
                             catch e
                                 outcome = error
                                 err_msg = "shadow path error: $e"
-                                return  # finally will still run
+                                return  # outer finally still runs → result written
                             end
 
                             shadow_abs_path = try
@@ -381,7 +383,7 @@ function run_mutations(
                             catch e
                                 outcome = error
                                 err_msg = "shadow path error: $e"
-                                return  # finally will still run
+                                return  # outer finally still runs → result written
                             end
 
                             shadow_original_src = try
@@ -389,7 +391,7 @@ function run_mutations(
                             catch e
                                 outcome = error
                                 err_msg = "cannot read shadow source: $e"
-                                return  # finally will still run
+                                return  # outer finally still runs → result written
                             end
 
                             try
@@ -417,16 +419,15 @@ function run_mutations(
                                 end
                             end
                         finally
-                            # Always return shadow to pool — even on error paths.
+                            # Always return shadow to pool AND write result — even on early-return
+                            # error paths. outcome/err_msg are set before every return above.
                             put!(shadow_ch, sh)
-                        end
-
-                        elapsed = time() - mutant_t0
-                        results_buf[_i] = MutantResult(_site, outcome, elapsed, err_msg)
-
-                        if verbose
-                            println("[gremlins] [parallel] [$_i/$n_sites] $(_site.id[1:8])… $(outcome) ($(round(elapsed, digits=2))s)")
-                            flush(stdout)
+                            elapsed = time() - mutant_t0
+                            results_buf[_i] = MutantResult(_site, outcome, elapsed, err_msg)
+                            if verbose
+                                println("[gremlins] [parallel] [$_i/$n_sites] $(_site.id[1:8])… $(outcome) ($(round(elapsed, digits=2))s)")
+                                flush(stdout)
+                            end
                         end
                     end  # @async
                 end  # for site

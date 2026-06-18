@@ -144,9 +144,12 @@ end
         mutant_timeout=PARALLEL_MUTANT_TIMEOUT,
         parallel=4)
 
-    # no_coverage counts must match
+    # Fixture guarantee: multiply() is never called by the test suite, so at least
+    # one no_coverage site must arise. This makes the testset falsifiable — if
+    # every site were covered, the equality below would pass vacuously.
     n_nocov_seq = count(r -> r.outcome == no_coverage, result_seq.results)
     n_nocov_par = count(r -> r.outcome == no_coverage, result_par.results)
+    @test n_nocov_seq > 0          # fixture must have ≥1 uncovered site
     @test n_nocov_seq == n_nocov_par
 
     # All outcomes must match per site

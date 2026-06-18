@@ -17,4 +17,12 @@ function is_positive(x)
     return x > 0
 end
 
+
+# UNCOVERED site:
+# multiply(a, b) is never called by the test suite.
+# Any mutation here will be classified as no_coverage.
+function multiply(a, b)
+    return a * b
+end
+
 end # module MiniTarget

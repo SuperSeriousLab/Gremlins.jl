@@ -385,6 +385,12 @@ function main(argv::Vector{String})
         exit(1)
     end
 
+    # Warn if --parallel is passed with a mode that ignores it
+    if args.parallel > 1 && (args.warm || args.schema)
+        mode = args.warm ? "--warm" : "--schema"
+        elog("WARNING: --parallel $(args.parallel) is ignored with $(mode); --parallel applies to the cold run path only")
+    end
+
     # Resolve test file
     test_dir, test_file_bare = _resolve_test_file(pkgdir, args.test_file)
 
