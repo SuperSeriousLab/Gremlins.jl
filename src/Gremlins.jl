@@ -93,6 +93,7 @@ export report
 export report_json
 export report_markdown
 export print_summary
+export render_survivor_diffs
 
 # Cache (M2)
 export MutantCache

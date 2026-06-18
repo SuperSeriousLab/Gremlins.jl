@@ -37,6 +37,7 @@ struct ParsedArgs
     warm::Bool
     schema::Bool                # --schema: opt-in compile-once schema mode
     blame::Bool                 # --blame: opt-in survivor-coverage blame pass
+    diff::Bool                  # --diff: print unified diff per surviving mutant
     json_out::Union{String, Nothing}
     strong_threshold::Float64
     acceptable_threshold::Float64
@@ -56,6 +57,7 @@ function _parse_args(argv::Vector{String})::ParsedArgs
     warm = false
     schema = false
     blame = false
+    diff = false
     json_out = nothing
     strong = 0.80
     acceptable = 0.60
@@ -84,6 +86,8 @@ function _parse_args(argv::Vector{String})::ParsedArgs
             schema = true
         elseif arg == "--blame"
             blame = true
+        elseif arg == "--diff"
+            diff = true
         elseif arg == "--json"
             i += 1
             i > length(argv) && throw(ArgumentError("--json requires a value"))
@@ -123,7 +127,7 @@ function _parse_args(argv::Vector{String})::ParsedArgs
     acceptable > strong && throw(ArgumentError("--acceptable must be <= --strong"))
     (warm && schema) && throw(ArgumentError("--warm and --schema are mutually exclusive"))
 
-    return ParsedArgs(pkg, files, test_file, warm, schema, blame, json_out, strong, acceptable, max_sites, indiff_ref)
+    return ParsedArgs(pkg, files, test_file, warm, schema, blame, diff, json_out, strong, acceptable, max_sites, indiff_ref)
 end
 
 function _print_usage()
@@ -150,6 +154,7 @@ Options:
                        (faster than warm on eligible-heavy files; ineligible sites
                         fall back to warm automatically). Mutually exclusive with --warm.
   --blame              After the run, name the test file(s) covering each surviving mutant (N extra coverage runs)
+  --diff               Print a unified diff hunk per surviving mutant (Vimes parity)
   --json <out.json>    Write JSON report to this file
   --strong <float>     Kill-rate threshold for "strong" band (default: 0.80)
   --acceptable <float> Kill-rate threshold for "acceptable" band (default: 0.60)
@@ -458,6 +463,18 @@ function main(argv::Vector{String})
             Gremlins.render_blame(stdout, blame_report)
         catch e
             elog("WARNING: blame pass failed: $e")
+        end
+    end
+
+    # Opt-in unified diff per surviving mutant (--diff, Issue #4, Vimes parity)
+    if args.diff
+        try
+            diff_str = Gremlins.render_survivor_diffs(run_result, pkgdir)
+            if !isempty(strip(diff_str))
+                println(diff_str)
+            end
+        catch e
+            elog("WARNING: --diff rendering failed: $e")
         end
     end
 

@@ -429,7 +429,87 @@ function report_schema_markdown(sr::SchemaRunResult)::String
     return join(lines, "\n")
 end
 
+# ─── Unified diff per surviving mutant (Issue #4, Vimes parity) ───────────────
+
+"""
+    render_survivor_diffs(result::RunResult, pkgdir::String) -> String
+
+For each surviving mutant (sorted by relpath, line, id), render a minimal
+unified diff hunk showing the changed line.
+
+Format per hunk:
+    --- a/<relpath>
+    +++ b/<relpath>
+    @@ -<line> +<line> @@
+    -<original line>
+    +<mutated line>
+
+The mutated line is derived by splicing `site.replacement` over `site.byte_range`
+in the source file, then extracting the affected line.  Source files are resolved
+relative to `pkgdir` (falling back to `joinpath(pkgdir, "src", relpath)` if the
+direct join doesn't exist, matching discover.jl conventions).
+
+Returns an empty string when there are no survivors.
+"""
+function render_survivor_diffs(result::RunResult, pkgdir::String)::String
+    survivors = filter(r -> r.outcome == survived, result.results)
+    isempty(survivors) && return ""
+
+    # Sort deterministically: (relpath, line, id) — same order as report_markdown
+    sort!(survivors; by = r -> (r.site.relpath, r.site.line, r.site.id))
+
+    buf = IOBuffer()
+    for r in survivors
+        s = r.site
+        # Resolve source file path
+        direct = joinpath(pkgdir, s.relpath)
+        src_path = if isfile(direct)
+            direct
+        else
+            fallback = joinpath(pkgdir, "src", s.relpath)
+            isfile(fallback) ? fallback : direct   # keep direct so error is clear
+        end
+
+        src_text = try
+            read(src_path, String)
+        catch e
+            throw(MutationError("render_survivor_diffs: cannot read $(src_path): $e"))
+        end
+
+        # Produce the mutated source via byte-range splice (reuse apply logic)
+        mutated_text = apply(s, src_text)
+
+        # Extract the affected line from original and mutated text
+        orig_line = _line_at(src_text, s.line)
+        mut_line  = _line_at(mutated_text, s.line)
+
+        # Emit hunk
+        println(buf, "--- a/$(s.relpath)")
+        println(buf, "+++ b/$(s.relpath)")
+        println(buf, "@@ -$(s.line) +$(s.line) @@")
+        println(buf, "-$(orig_line)")
+        println(buf, "+$(mut_line)")
+    end
+    return String(take!(buf))
+end
+
+"""
+    _line_at(src::String, n::Int) -> String
+
+Return the n-th line (1-based) of `src`, without the trailing newline.
+Throws `MutationError` if `n` is out of range.
+"""
+function _line_at(src::String, n::Int)::String
+    lines = split(src, '\n'; keepempty=true)
+    # split on '\n' for a file ending in '\n' yields an empty string at end — fine
+    if n < 1 || n > length(lines)
+        throw(MutationError("_line_at: line $n out of range (file has $(length(lines)) lines after split)"))
+    end
+    return lines[n]
+end
+
 # Export
+export render_survivor_diffs
 export print_warm_summary
 export report_warm_markdown
 export print_schema_summary

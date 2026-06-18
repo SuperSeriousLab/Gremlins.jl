@@ -700,3 +700,6 @@ include("blame_fixture_test.jl")
 
 # ─── Bug fix: test-env deps (#2/#3) ──────────────────────────────────────────
 include("test_testenv.jl")
+
+# ─── Issue #4: unified diff per surviving mutant (Vimes parity) ──────────────
+include("test_diff.jl")
