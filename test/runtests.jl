@@ -706,3 +706,6 @@ include("test_diff.jl")
 
 # ─── Issue #5: ReTestItems/TestItemRunner layout in detect_units ──────────────
 include("test_retestitems.jl")
+
+# ─── Issue #7: parallel mutant execution ─────────────────────────────────────
+include("test_parallel.jl")

@@ -99,6 +99,7 @@ end
                   timeout_multiplier=3.0,
                   coverage_overhead=2.5,
                   mutant_timeout=nothing,
+                  parallel=1,
                   verbose=false) -> RunResult
 
 For each `MutationSite` in `sites` (processed in sorted id order):
@@ -125,7 +126,16 @@ run is ~205s).
 `est_plain * timeout_multiplier` derivation entirely. Use when you know the exact
 budget needed.
 
+`parallel`: number of concurrent mutant runs (default 1 = sequential). When > 1,
+a pool of `parallel` shadow copies is created SEQUENTIALLY (because
+`_augment_shadow_with_test_deps` is process-global via `Pkg.activate`), then
+mutants are dispatched concurrently via `@sync`/`@async` + a `Channel` of available
+shadows. Results are assembled in the original `sites` order regardless of
+completion order (determinism invariant I2). Coverage-skip sites are classified
+without consuming a shadow slot.
+
 Shadow is created ONCE per run (not per mutant) and cleaned up in finally.
+When `parallel > 1`, a pool of shadows is created and all are cleaned up in finally.
 """
 function run_mutations(
     pkgdir::AbstractString,
@@ -137,6 +147,7 @@ function run_mutations(
     timeout_multiplier::Float64  = 3.0,
     coverage_overhead::Float64   = 2.5,
     mutant_timeout::Union{Float64, Nothing} = nothing,
+    parallel::Int                = 1,
     verbose::Bool                = false,
 )::RunResult
     pkgdir = abspath(pkgdir)
@@ -170,111 +181,276 @@ function run_mutations(
                     "derived mutant timeout $(round(derived_timeout, digits=1))s")
         end
     end
+
     # Sort sites deterministically by id
     sorted_sites = sort(sites, by = s -> s.id)
 
-    jl = _julia_exe()
-    results = MutantResult[]
     run_t0 = time()
 
-    # Create shadow copy ONCE — real tree is NEVER written (I1 crash-safety)
-    # If SIGKILL hits us, the shadow tmpdir is left in /tmp as harmless garbage.
-    shadow = _make_shadow(pkgdir)
-    verbose && println("[gremlins] Shadow copy at: $shadow")
+    if parallel <= 1
+        # ── Sequential path (unchanged from original) ────────────────────────
+        jl = _julia_exe()
+        results = MutantResult[]
 
-    # Augment shadow with test-only deps so `--project=<shadow>` can load them.
-    # No-op (returns false) when the package has no non-stdlib test deps.
-    _augment_shadow_with_test_deps(pkgdir, shadow)
+        # Create shadow copy ONCE — real tree is NEVER written (I1 crash-safety)
+        # If SIGKILL hits us, the shadow tmpdir is left in /tmp as harmless garbage.
+        shadow = _make_shadow(pkgdir)
+        verbose && println("[gremlins] Shadow copy at: $shadow")
 
-    try
-        shadow_test_path = joinpath(shadow, test_dir, test_file)
+        # Augment shadow with test-only deps so `--project=<shadow>` can load them.
+        # No-op (returns false) when the package has no non-stdlib test deps.
+        _augment_shadow_with_test_deps(pkgdir, shadow)
 
-        for (i, site) in enumerate(sorted_sites)
-            # 1. Coverage check
-            if !is_covered(cmap, site)
+        try
+            shadow_test_path = joinpath(shadow, test_dir, test_file)
+
+            for (i, site) in enumerate(sorted_sites)
+                # 1. Coverage check
+                if !is_covered(cmap, site)
+                    if verbose
+                        println("[gremlins] [$i/$(length(sorted_sites))] $(site.id[1:8])… no_coverage")
+                        flush(stdout)
+                    end
+                    push!(results, MutantResult(site, no_coverage, 0.0, ""))
+                    continue
+                end
+
                 if verbose
-                    println("[gremlins] [$i/$(length(sorted_sites))] $(site.id[1:8])… no_coverage")
+                    print("[gremlins] [$i/$(length(sorted_sites))] $(site.id[1:8])… ")
                     flush(stdout)
                 end
-                push!(results, MutantResult(site, no_coverage, 0.0, ""))
-                continue
-            end
 
-            if verbose
-                print("[gremlins] [$i/$(length(sorted_sites))] $(site.id[1:8])… ")
-                flush(stdout)
-            end
-
-            # 2. Determine shadow path (real path is never touched)
-            real_abs_path = _site_abs_path(pkgdir, site)
-            shadow_abs_path = try
-                _shadow_abs_path(pkgdir, shadow, real_abs_path)
-            catch e
-                push!(results, MutantResult(site, error, 0.0, "shadow path error: $e"))
-                if verbose
-                    println("error (shadow path)")
-                    flush(stdout)
+                # 2. Determine shadow path (real path is never touched)
+                real_abs_path = _site_abs_path(pkgdir, site)
+                shadow_abs_path = try
+                    _shadow_abs_path(pkgdir, shadow, real_abs_path)
+                catch e
+                    push!(results, MutantResult(site, error, 0.0, "shadow path error: $e"))
+                    if verbose
+                        println("error (shadow path)")
+                        flush(stdout)
+                    end
+                    continue
                 end
-                continue
-            end
 
-            mutant_t0 = time()
-            outcome   = survived
-            err_msg   = ""
+                mutant_t0 = time()
+                outcome   = survived
+                err_msg   = ""
 
-            shadow_original_src = try
-                read(shadow_abs_path, String)
-            catch e
-                push!(results, MutantResult(site, error, 0.0, "cannot read shadow source: $e"))
-                if verbose
-                    println("error (read shadow)")
-                    flush(stdout)
+                shadow_original_src = try
+                    read(shadow_abs_path, String)
+                catch e
+                    push!(results, MutantResult(site, error, 0.0, "cannot read shadow source: $e"))
+                    if verbose
+                        println("error (read shadow)")
+                        flush(stdout)
+                    end
+                    continue
                 end
-                continue
-            end
 
-            # 3. Apply mutation to shadow + run + revert shadow (hygiene, not safety)
-            try
-                apply!(site, shadow_abs_path)
-
-                # 4. Run test subprocess against shadow project
-                cmd = Cmd([jl, "--project=$shadow", shadow_test_path])
-                exit_code, _ = _run_with_timeout(cmd, derived_timeout)
-
-                if exit_code == :timeout
-                    outcome = timeout
-                elseif exit_code != 0
-                    outcome = killed
-                else
-                    outcome = survived
-                end
-            catch e
-                outcome = error
-                err_msg = sprint(showerror, e)
-            finally
-                # In-shadow restoration (hygiene: keeps shadow valid for next mutant)
-                # This is NOT the crash-safety mechanism — real tree was never touched.
+                # 3. Apply mutation to shadow + run + revert shadow (hygiene, not safety)
                 try
-                    _atomic_write(shadow_abs_path, shadow_original_src)
-                catch restore_err
-                    @warn "[gremlins] Failed to restore shadow source (harmless — shadow will be cleaned up)" path=shadow_abs_path err=restore_err
+                    apply!(site, shadow_abs_path)
+
+                    # 4. Run test subprocess against shadow project
+                    cmd = Cmd([jl, "--project=$shadow", shadow_test_path])
+                    exit_code, _ = _run_with_timeout(cmd, derived_timeout)
+
+                    if exit_code == :timeout
+                        outcome = timeout
+                    elseif exit_code != 0
+                        outcome = killed
+                    else
+                        outcome = survived
+                    end
+                catch e
+                    outcome = error
+                    err_msg = sprint(showerror, e)
+                finally
+                    # In-shadow restoration (hygiene: keeps shadow valid for next mutant)
+                    # This is NOT the crash-safety mechanism — real tree was never touched.
+                    try
+                        _atomic_write(shadow_abs_path, shadow_original_src)
+                    catch restore_err
+                        @warn "[gremlins] Failed to restore shadow source (harmless — shadow will be cleaned up)" path=shadow_abs_path err=restore_err
+                    end
+                end
+
+                elapsed = time() - mutant_t0
+                push!(results, MutantResult(site, outcome, elapsed, err_msg))
+                if verbose
+                    println(string(outcome), " ($(round(elapsed, digits=2))s)")
+                    flush(stdout)
                 end
             end
+        finally
+            # Clean up shadow — a SIGKILL skip of this cleanup leaves harmless tmp garbage
+            rm(shadow; recursive=true, force=true)
+        end
 
-            elapsed = time() - mutant_t0
-            push!(results, MutantResult(site, outcome, elapsed, err_msg))
-            if verbose
-                println(string(outcome), " ($(round(elapsed, digits=2))s)")
-                flush(stdout)
+        total_elapsed = time() - run_t0
+        return RunResult(pkgdir, sorted_sites, results, baseline_elapsed, total_elapsed)
+
+    else
+        # ── Parallel path ────────────────────────────────────────────────────
+        # Design:
+        #   1. Create `parallel` shadow copies SEQUENTIALLY. This is required because
+        #      _augment_shadow_with_test_deps calls Pkg.activate (process-global);
+        #      concurrent augmentation would race. Augmentation is idempotent, but
+        #      concurrent Pkg.activate calls are not safe.
+        #   2. Publish shadows to a Channel (bounded = parallel). Tasks check out a
+        #      shadow, run the mutant, revert, check it back in.
+        #   3. Coverage-skip sites are classified directly (no shadow consumed).
+        #   4. Results written into a preallocated Vector indexed by site position —
+        #      guarantees output in sites order regardless of completion order (I2).
+        #   5. All shadows cleaned up in a single finally block.
+
+        n_workers = parallel
+        jl = _julia_exe()
+        n_sites = length(sorted_sites)
+
+        # Preallocate result vector — filled by index so ordering is deterministic.
+        # Union{Nothing,MutantResult} so unset slots are detectable.
+        results_buf = Vector{Union{Nothing,MutantResult}}(nothing, n_sites)
+
+        verbose && println("[gremlins] [parallel=$n_workers] Creating shadow pool…")
+
+        # ── Step 1: create all shadows SEQUENTIALLY ───────────────────────────
+        shadows = String[]
+        try
+            for w in 1:n_workers
+                sh = _make_shadow(pkgdir)
+                verbose && println("[gremlins] [parallel] Shadow $w at: $sh")
+                _augment_shadow_with_test_deps(pkgdir, sh)
+                push!(shadows, sh)
+            end
+        catch e
+            # Clean up any shadows created so far before re-throwing.
+            for sh in shadows
+                rm(sh; recursive=true, force=true)
+            end
+            rethrow()
+        end
+
+        # ── Step 2: run mutants concurrently ─────────────────────────────────
+        try
+            # Channel holds available shadow paths. Capacity = n_workers so all
+            # workers can post without blocking; initial state = all shadows ready.
+            shadow_ch = Channel{String}(n_workers)
+            for sh in shadows
+                put!(shadow_ch, sh)
+            end
+
+            @sync begin
+                for (i, site) in enumerate(sorted_sites)
+                    # Coverage-skip: classify immediately, no shadow needed.
+                    if !is_covered(cmap, site)
+                        if verbose
+                            println("[gremlins] [parallel] [$i/$n_sites] $(site.id[1:8])… no_coverage")
+                            flush(stdout)
+                        end
+                        results_buf[i] = MutantResult(site, no_coverage, 0.0, "")
+                        continue
+                    end
+
+                    # Capture loop variable for the async task.
+                    local _i = i
+                    local _site = site
+
+                    @async begin
+                        # Check out a shadow (blocks until one is free).
+                        local sh = take!(shadow_ch)
+                        local outcome = survived
+                        local err_msg = ""
+                        local mutant_t0 = time()
+
+                        try
+                            shadow_test_path = joinpath(sh, test_dir, test_file)
+
+                            # Determine shadow path for this site's source file.
+                            real_abs_path = try
+                                _site_abs_path(pkgdir, _site)
+                            catch e
+                                outcome = error
+                                err_msg = "shadow path error: $e"
+                                return  # finally will still run
+                            end
+
+                            shadow_abs_path = try
+                                _shadow_abs_path(pkgdir, sh, real_abs_path)
+                            catch e
+                                outcome = error
+                                err_msg = "shadow path error: $e"
+                                return  # finally will still run
+                            end
+
+                            shadow_original_src = try
+                                read(shadow_abs_path, String)
+                            catch e
+                                outcome = error
+                                err_msg = "cannot read shadow source: $e"
+                                return  # finally will still run
+                            end
+
+                            try
+                                apply!(_site, shadow_abs_path)
+
+                                cmd = Cmd([jl, "--project=$sh", shadow_test_path])
+                                exit_code, _ = _run_with_timeout(cmd, derived_timeout)
+
+                                if exit_code == :timeout
+                                    outcome = timeout
+                                elseif exit_code != 0
+                                    outcome = killed
+                                else
+                                    outcome = survived
+                                end
+                            catch e
+                                outcome = error
+                                err_msg = sprint(showerror, e)
+                            finally
+                                # In-shadow revert (hygiene: keep shadow clean for next task)
+                                try
+                                    _atomic_write(shadow_abs_path, shadow_original_src)
+                                catch restore_err
+                                    @warn "[gremlins] [parallel] Failed to restore shadow source" path=shadow_abs_path err=restore_err
+                                end
+                            end
+                        finally
+                            # Always return shadow to pool — even on error paths.
+                            put!(shadow_ch, sh)
+                        end
+
+                        elapsed = time() - mutant_t0
+                        results_buf[_i] = MutantResult(_site, outcome, elapsed, err_msg)
+
+                        if verbose
+                            println("[gremlins] [parallel] [$_i/$n_sites] $(_site.id[1:8])… $(outcome) ($(round(elapsed, digits=2))s)")
+                            flush(stdout)
+                        end
+                    end  # @async
+                end  # for site
+            end  # @sync
+
+        finally
+            # Clean up all shadows — SIGKILL skip leaves harmless tmp garbage.
+            for sh in shadows
+                rm(sh; recursive=true, force=true)
             end
         end
-    finally
-        # Clean up shadow — a SIGKILL skip of this cleanup leaves harmless tmp garbage
-        rm(shadow; recursive=true, force=true)
-    end
 
-    total_elapsed = time() - run_t0
-    return RunResult(pkgdir, sorted_sites, results, baseline_elapsed, total_elapsed)
+        # Assemble results in sites order (determinism I2).
+        # Any slot still `nothing` means a bug in the logic above; fill with error.
+        results = MutantResult[
+            (isnothing(results_buf[i])
+                ? MutantResult(sorted_sites[i], error, 0.0, "parallel runner: result slot never filled")
+                : results_buf[i])
+            for i in 1:n_sites
+        ]
+
+        total_elapsed = time() - run_t0
+        return RunResult(pkgdir, sorted_sites, results, baseline_elapsed, total_elapsed)
+    end
 end
 
 # ─── Convenience entry point ──────────────────────────────────────────────────
@@ -323,6 +499,7 @@ function mutate(
     mutant_timeout::Union{Float64, Nothing} = nothing,
     max_mutants::Union{Int, Nothing} = nothing,
     files::Union{Vector{String}, Nothing} = nothing,
+    parallel::Int                 = 1,
     verbose::Bool                 = false,
 )::RunResult
     pkgdir = abspath(pkgdir)
@@ -356,6 +533,7 @@ function mutate(
         timeout_multiplier=timeout_multiplier,
         coverage_overhead=coverage_overhead,
         mutant_timeout=mutant_timeout,
+        parallel=parallel,
         verbose=verbose)
 end
 

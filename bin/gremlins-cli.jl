@@ -43,6 +43,7 @@ struct ParsedArgs
     acceptable_threshold::Float64
     max_sites::Int              # 0 = no cap; >0 = take first N sites (deterministic)
     indiff_ref::Union{String, Nothing}  # --in-diff <ref>: scope to diff vs this ref
+    parallel::Int               # --parallel N: concurrent mutant execution (cold path only, default 1)
 end
 
 """
@@ -63,6 +64,7 @@ function _parse_args(argv::Vector{String})::ParsedArgs
     acceptable = 0.60
     max_sites = 0
     indiff_ref = nothing
+    parallel = 1
 
     i = 1
     while i <= length(argv)
@@ -114,6 +116,12 @@ function _parse_args(argv::Vector{String})::ParsedArgs
             i += 1
             i > length(argv) && throw(ArgumentError("--in-diff requires a value"))
             indiff_ref = argv[i]
+        elseif arg == "--parallel" || arg == "--jobs"
+            i += 1
+            i > length(argv) && throw(ArgumentError("--parallel requires a value"))
+            v = tryparse(Int, argv[i])
+            (v === nothing || v < 1) && throw(ArgumentError("--parallel must be an integer >= 1"))
+            parallel = v
         elseif arg == "--help" || arg == "-h"
             _print_usage()
             exit(0)
@@ -127,7 +135,7 @@ function _parse_args(argv::Vector{String})::ParsedArgs
     acceptable > strong && throw(ArgumentError("--acceptable must be <= --strong"))
     (warm && schema) && throw(ArgumentError("--warm and --schema are mutually exclusive"))
 
-    return ParsedArgs(pkg, files, test_file, warm, schema, blame, diff, json_out, strong, acceptable, max_sites, indiff_ref)
+    return ParsedArgs(pkg, files, test_file, warm, schema, blame, diff, json_out, strong, acceptable, max_sites, indiff_ref, parallel)
 end
 
 function _print_usage()
@@ -162,6 +170,11 @@ Options:
                        0 = no cap (default). Use to bound per-chunk CI run time
                        (e.g. --max-sites 40 keeps T4 under ~10 min on JUI).
                        Capped runs are noted in the band output line.
+  --parallel <int>     Run N mutants concurrently (default: 1 = sequential).
+                       Applies to the cold run path only. Use to exploit multi-core
+                       machines; each mutant runs in its own shadow copy so there
+                       is no shared state between concurrent runs.
+                       (--jobs is accepted as an alias)
   --help               Print this message
 
 Band output (always printed to stdout):
@@ -439,12 +452,17 @@ function main(argv::Vector{String})
         end
         warm_result.run
     else
-        elog("[gremlins] Running cold mutation run...")
+        if args.parallel > 1
+            elog("[gremlins] Running cold mutation run (parallel=$(args.parallel))...")
+        else
+            elog("[gremlins] Running cold mutation run...")
+        end
         try
             Gremlins.run_mutations(pkgdir, sites, cmap;
                 test_dir=test_dir,
                 test_file=test_file_bare,
                 baseline_elapsed=baseline_elapsed,
+                parallel=args.parallel,
                 verbose=false)
         catch e
             elog("ERROR: cold run failed: $e")
