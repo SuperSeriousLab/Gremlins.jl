@@ -703,3 +703,6 @@ include("test_testenv.jl")
 
 # ─── Issue #4: unified diff per surviving mutant (Vimes parity) ──────────────
 include("test_diff.jl")
+
+# ─── Issue #5: ReTestItems/TestItemRunner layout in detect_units ──────────────
+include("test_retestitems.jl")

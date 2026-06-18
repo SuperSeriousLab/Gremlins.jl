@@ -59,15 +59,86 @@ _is_test_unit(name::AbstractString, test_dir::AbstractString)::Bool =
     isfile(joinpath(test_dir, name))
 
 """
-    detect_units(runtests_path; test_dir=dirname(runtests_path)) -> (prelude, units)
+    _is_retestitems_layout(tree, src) -> Bool
+
+Return true when the top-level statements of a parsed runtests.jl reference
+ReTestItems or TestItemRunner via identifiers/macros that signal the
+"no include()" auto-discovery layout.  Detection is purely AST-text based
+(JuliaSyntax sourcetext over located nodes — no regex over raw source).
+Signals: any top-level node whose sourcetext contains one of the known tokens.
+"""
+function _is_retestitems_layout(tree, src::AbstractString)::Bool
+    signals = ("ReTestItems", "TestItemRunner", "@run_package_tests")
+    for node in JuliaSyntax.children(tree)
+        txt = JuliaSyntax.sourcetext(node)
+        for sig in signals
+            occursin(sig, txt) && return true
+        end
+        # Also check for a bare `runtests(` call at top level (not inside include)
+        if JuliaSyntax.kind(node) == JuliaSyntax.K"call"
+            cs = JuliaSyntax.children(node)
+            if !isempty(cs) && JuliaSyntax.sourcetext(cs[1]) == "runtests"
+                return true
+            end
+        end
+    end
+    return false
+end
+
+"""
+    _find_retestitems_units(test_dir, pkg_src_dir) -> Vector{TestUnit}
+
+Enumerate `*_test.jl` and `*_tests.jl` files under `test_dir` and optionally
+`pkg_src_dir` (src-collocated test items). Each file becomes a `TestUnit` whose
+driver invokes `using ReTestItems; runtests("<abs path>")`.
+Units are sorted by label for determinism.
+"""
+function _find_retestitems_units(test_dir::AbstractString,
+                                 pkg_src_dir::Union{AbstractString,Nothing})::Vector{TestUnit}
+    search_dirs = AbstractString[test_dir]
+    pkg_src_dir !== nothing && isdir(pkg_src_dir) && push!(search_dirs, pkg_src_dir)
+
+    units = TestUnit[]
+    seen  = Set{String}()  # guard against duplicates if dirs overlap
+    for search_dir in search_dirs
+        isdir(search_dir) || continue
+        for (dp, _, fns) in walkdir(search_dir)
+            for fn in fns
+                (endswith(fn, "_test.jl") || endswith(fn, "_tests.jl")) || continue
+                abs_path = joinpath(dp, fn)
+                abs_path in seen && continue
+                push!(seen, abs_path)
+                # label = basename (consistent with classic include-unit labels)
+                label = fn
+                driver = "using ReTestItems\nruntests(\"$abs_path\")\n"
+                push!(units, TestUnit(label, driver))
+            end
+        end
+    end
+    sort!(units, by = u -> u.label)
+    return units
+end
+
+"""
+    detect_units(runtests_path; test_dir=dirname(runtests_path),
+                 pkg_src_dir=nothing) -> (prelude, units)
 
 Parse `runtests_path` with JuliaSyntax. Classify each top-level statement:
 include of a test file -> a unit; `@testset` -> inline tests; else -> prelude
 (defs shared by every unit). Returns the prelude source and the unit list
 (include-units sorted by label, then one "<inline>" unit if any @testset exists).
+
+**ReTestItems/TestItemRunner layout** (no include() present and the file
+references `ReTestItems`, `TestItemRunner`, or `@run_package_tests`): instead,
+enumerate `*_test.jl` / `*_tests.jl` files under `test_dir` (and `pkg_src_dir`
+if provided). Each becomes a `TestUnit` whose driver calls
+`using ReTestItems; runtests("<abs path>")`. If no such files exist, a `@warn`
+is emitted and an empty unit list is returned (blame will mark everything
+unattributed rather than crashing).
 """
 function detect_units(runtests_path::AbstractString;
-                      test_dir::AbstractString = dirname(runtests_path))
+                      test_dir::AbstractString = dirname(runtests_path),
+                      pkg_src_dir::Union{AbstractString,Nothing} = nothing)
     isfile(runtests_path) || throw(MutationError("detect_units: not a file: $runtests_path"))
     src = read(runtests_path, String)
     tree = JuliaSyntax.parseall(JuliaSyntax.SyntaxNode, src; filename=runtests_path)
@@ -86,6 +157,20 @@ function detect_units(runtests_path::AbstractString;
         else
             push!(defs, txt)
         end
+    end
+
+    # If the normal paths found nothing AND the file looks like a ReTestItems layout,
+    # fall back to enumerating *_test.jl / *_tests.jl files.
+    if isempty(include_units) && isempty(inlines) && _is_retestitems_layout(tree, src)
+        units = _find_retestitems_units(test_dir, pkg_src_dir)
+        if isempty(units)
+            @warn "detect_units: ReTestItems/TestItemRunner layout detected in " *
+                  "$runtests_path but no *_test.jl / *_tests.jl files found under " *
+                  "$(test_dir)$(pkg_src_dir === nothing ? "" : " or $pkg_src_dir"). " *
+                  "Per-file blame is unsupported for this layout — all survivors " *
+                  "will be unattributed."
+        end
+        return "", units
     end
 
     sort!(include_units, by = first)
