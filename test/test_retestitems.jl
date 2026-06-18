@@ -104,6 +104,35 @@ end
     end
 end
 
+@testset "detect_units — src-collocated _test.jl enumerated via pkg_src_dir" begin
+    mktempdir() do dir
+        testdir = joinpath(dir, "test")
+        srcdir  = joinpath(dir, "src")
+        mkpath(testdir)
+        mkpath(srcdir)
+
+        write(joinpath(testdir, "runtests.jl"), """
+        using ReTestItems
+        runtests(Baz)
+        """)
+        # test item collocated under src/ (a valid ReTestItems convention)
+        write(joinpath(srcdir, "c_test.jl"), """
+        @testitem "c" begin
+            @test true
+        end
+        """)
+
+        runtests_path = joinpath(testdir, "runtests.jl")
+        # without pkg_src_dir the src-collocated file is missed; with it, found
+        _, none = detect_units(runtests_path; test_dir=testdir)
+        @test isempty(none)
+        _, units = detect_units(runtests_path; test_dir=testdir, pkg_src_dir=srcdir)
+        @test length(units) == 1
+        @test units[1].label == "c_test.jl"
+        @test occursin("runtests(", units[1].driver)
+    end
+end
+
 @testset "detect_units — @run_package_tests layout detected as ReTestItems" begin
     mktempdir() do dir
         testdir = joinpath(dir, "test")

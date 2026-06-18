@@ -212,7 +212,8 @@ function per_unit_coverage(pkgdir::AbstractString;
     isfile(runtests_path) || throw(MutationError(
         "per_unit_coverage: test file not found: $runtests_path"))
 
-    _, units = detect_units(runtests_path; test_dir=joinpath(pkgdir, test_dir))
+    _, units = detect_units(runtests_path; test_dir=joinpath(pkgdir, test_dir),
+                            pkg_src_dir=joinpath(pkgdir, "src"))
 
     maps = Dict{String, CoverageMap}()
     failed = String[]
