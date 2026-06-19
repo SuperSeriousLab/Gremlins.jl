@@ -22,7 +22,7 @@ For CI, there's a `--files` flag to keep runs scoped to changed files.
 ```julia
 using Gremlins
 result = mutate_warm(".")
-print_warm_summary(result)
+print_summary(result)
 ```
 
 testing and testing of testing has become my sort-of-passion

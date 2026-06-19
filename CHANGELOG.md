@@ -3,6 +3,11 @@
 Notable changes per release. Format follows [Keep a Changelog](https://keepachangelog.com);
 versions follow Julia 0.x semver (a minor bump is the breaking slot).
 
+## [0.4.0] - unreleased
+
+### Changed
+- **Breaking:** report and summary functions are unified onto multiple dispatch. `print_warm_summary` and `print_schema_summary` are now methods of `print_summary`; `report_warm_markdown` and `report_schema_markdown` are now methods of `report_markdown`. The argument type selects the variant. The suffixed names are removed — call `print_summary` / `report_markdown` instead.
+
 ## [0.3.1] - 2026-06-19
 
 ### Fixed

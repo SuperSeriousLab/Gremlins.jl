@@ -216,7 +216,7 @@ runs tests in fresh Module, restores. Falls back to cold for ineligible sites.
 cache = load_cache(pkgdir)
 result = run_mutations_warm(pkgdir, sites, cmap; cache=cache, verbose=true)
 save_cache(cache)
-print_warm_summary(result)
+print_summary(result)
 ```
 
 ### `mutate_warm(pkgdir; ...) -> WarmRunResult`
@@ -231,7 +231,7 @@ High-level warm-path entry point: discover + baseline + warm run + cache.
 
 ```julia
 result = mutate_warm("/path/to/MyPkg"; verbose=true)
-print_warm_summary(result)
+print_summary(result)
 ```
 
 ### `classify_warm_eligibility(site, pkgdir) -> WarmEligibility`
@@ -251,25 +251,19 @@ md = report(result)                   # Markdown
 js = report(result; format=:json)     # JSON (schema: gremlins-report-v1)
 ```
 
-### `report_markdown(result::RunResult) -> String`
+### `report_markdown(result::RunResult | wr::WarmRunResult | sr::SchemaRunResult) -> String`
 
-Markdown survival report: summary table, surviving mutants table, timeout/error tables.
+Markdown survival report. The `WarmRunResult` method adds warm-fallback taxonomy
+and I4 results; the `SchemaRunResult` method adds the schema/warm split.
 
 ### `report_json(result::RunResult) -> String`
 
 JSON report. Schema: `gremlins-report-v1`.
 
-### `print_summary(result::RunResult)`
+### `print_summary(result::RunResult | wr::WarmRunResult | sr::SchemaRunResult)`
 
-Compact console summary.
-
-### `print_warm_summary(wr::WarmRunResult)`
-
-Compact warm-run summary including fallback taxonomy, cache hits, I4 results.
-
-### `report_warm_markdown(wr::WarmRunResult) -> String`
-
-Full Markdown warm report.
+Compact console summary. The `WarmRunResult` method adds fallback taxonomy,
+cache hits, and I4 results; the `SchemaRunResult` method adds the schema/warm split.
 
 ---
 
@@ -373,7 +367,7 @@ sites = discover("src/")
 filtered = filter(s -> any(f -> endswith(s.relpath, basename(f)), changed_files), sites)
 elapsed, cmap = baseline_run(".")
 result = run_mutations_warm(".", filtered, cmap; verbose=true)
-print_warm_summary(result)
+print_summary(result)
 ```
 
 ### Budget-capped run (exploratory)

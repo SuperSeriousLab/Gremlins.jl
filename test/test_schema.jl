@@ -340,7 +340,7 @@ end
 
 # ─── C5.3: SchemaRunResult report ────────────────────────────────────────────
 
-@testset "print_schema_summary: contains schema/warm split" begin
+@testset "print_summary: contains schema/warm split" begin
     mktempdir() do dir
         pkgdir = build_demo_pkg(dir)
         belapsed, cmap = Gremlins.baseline_run(pkgdir)
@@ -351,7 +351,7 @@ end
                                             baseline_elapsed=belapsed,
                                             agreement_check=false)
         out = _capture_stdout_schema() do
-            Gremlins.print_schema_summary(res)
+            Gremlins.print_summary(res)
         end
         @test occursin("schema-ran", out)
         @test occursin("warm-fallback", out)
@@ -365,7 +365,7 @@ end
     end
 end
 
-@testset "report_schema_markdown: contains schema/warm split" begin
+@testset "report_markdown: contains schema/warm split" begin
     mktempdir() do dir
         pkgdir = build_demo_pkg(dir)
         belapsed, cmap = Gremlins.baseline_run(pkgdir)
@@ -375,7 +375,7 @@ end
                                             pkg_name="Demo",
                                             baseline_elapsed=belapsed,
                                             agreement_check=false)
-        md = Gremlins.report_schema_markdown(res)
+        md = Gremlins.report_markdown(res)
         @test occursin("schema-ran", md)
         @test occursin("warm-fallback", md)
         @test occursin("Schema/Warm Split", md)
@@ -383,7 +383,7 @@ end
     end
 end
 
-@testset "print_schema_summary: auto-disable line present when fired" begin
+@testset "print_summary: auto-disable line present when fired" begin
     # Build a fake SchemaRunResult with auto_disabled=true and verify the line fires.
     # We use a hand-constructed result rather than running schema (avoids slow runs).
     mktempdir() do dir
@@ -406,7 +406,7 @@ end
             1.234,  # agreement_warm_time
         )
         out = _capture_stdout_schema() do
-            Gremlins.print_schema_summary(fake)
+            Gremlins.print_summary(fake)
         end
         @test occursin("schema auto-disabled (hot path)", out)
         @test occursin("schema=2.345s", out)

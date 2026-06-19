@@ -91,8 +91,12 @@ end
 
 """
     report_markdown(result::RunResult) -> String
+    report_markdown(wr::WarmRunResult) -> String
+    report_markdown(sr::SchemaRunResult) -> String
 
-Emit a human-readable Markdown survival report.
+Emit a human-readable Markdown survival report. The `WarmRunResult` method adds
+warm-fallback taxonomy and I4 results; the `SchemaRunResult` method adds the
+schema/warm split and taxonomy.
 """
 function report_markdown(result::RunResult)::String
     score = mutation_score(result)
@@ -190,8 +194,12 @@ end
 
 """
     print_summary(result::RunResult)
+    print_summary(wr::WarmRunResult)
+    print_summary(sr::SchemaRunResult)
 
-Print a compact summary to stdout.
+Print a compact summary to stdout. The `WarmRunResult` method adds the warm-run
+fallback taxonomy, cache hits, and I4 results; the `SchemaRunResult` method adds
+the schema/warm split and (when auto-disabled) a visible auto-disable line.
 """
 function print_summary(result::RunResult)
     score = mutation_score(result)
@@ -220,12 +228,7 @@ end
 
 # ─── Warm run report (M2) ─────────────────────────────────────────────────────
 
-"""
-    print_warm_summary(wr::WarmRunResult)
-
-Print a compact warm-run summary including fallback taxonomy, cache hits, and I4 results.
-"""
-function print_warm_summary(wr::WarmRunResult)
+function print_summary(wr::WarmRunResult)
     run = wr.run
     score = mutation_score(run)
     score_str = isnan(score) ? "N/A" : "$(round(score * 100, digits=1))%"
@@ -272,12 +275,7 @@ function print_warm_summary(wr::WarmRunResult)
     println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 end
 
-"""
-    report_warm_markdown(wr::WarmRunResult) -> String
-
-Emit a Markdown report for a warm run including taxonomy and I4 results.
-"""
-function report_warm_markdown(wr::WarmRunResult)::String
+function report_markdown(wr::WarmRunResult)::String
     run = wr.run
     score = mutation_score(run)
     score_str = isnan(score) ? "N/A" : "$(round(score * 100, digits=1))%"
@@ -335,15 +333,7 @@ end
 
 # ─── Schema run report (C5) ──────────────────────────────────────────────────
 
-"""
-    print_schema_summary(sr::SchemaRunResult)
-
-Print a compact schema-run summary to stdout.
-
-Shows the schema/warm split and, when `auto_disabled`, a visible auto-disable line.
-Taxonomy lists the warm-fallback reason breakdown (sums to `warm_fallback`).
-"""
-function print_schema_summary(sr::SchemaRunResult)
+function print_summary(sr::SchemaRunResult)
     run = sr.run
     score = mutation_score(run)
     score_str = isnan(score) ? "N/A" : "$(round(score * 100, digits=1))%"
@@ -375,12 +365,7 @@ function print_schema_summary(sr::SchemaRunResult)
     println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 end
 
-"""
-    report_schema_markdown(sr::SchemaRunResult) -> String
-
-Emit a Markdown report for a schema run including the schema/warm split and taxonomy.
-"""
-function report_schema_markdown(sr::SchemaRunResult)::String
+function report_markdown(sr::SchemaRunResult)::String
     run = sr.run
     score = mutation_score(run)
     score_str = isnan(score) ? "N/A" : "$(round(score * 100, digits=1))%"
@@ -510,7 +495,3 @@ end
 
 # Export
 export render_survivor_diffs
-export print_warm_summary
-export report_warm_markdown
-export print_schema_summary
-export report_schema_markdown

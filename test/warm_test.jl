@@ -499,18 +499,18 @@ end
 
 # ═══ Report functions ════════════════════════════════════════════════════════
 
-@testset "Report — print_warm_summary does not throw" begin
+@testset "Report — print_summary(::WarmRunResult) does not throw" begin
     wr = W2_RESULT_PLUS
-    @test_nowarn print_warm_summary(wr)
-    md = report_warm_markdown(wr)
+    @test_nowarn print_summary(wr)
+    md = report_markdown(wr)
     @test occursin("Warm Mutation Report", md)
     @test occursin("Fallback Taxonomy", md)
     @test occursin("I4 Agreement", md)
 end
 
-@testset "Report — report_warm_markdown returns valid string" begin
+@testset "Report — report_markdown returns valid string" begin
     wr = W2_RESULT_PLUS
-    md = report_warm_markdown(wr)
+    md = report_markdown(wr)
     @test md isa String
     @test occursin("Warm Mutation Report", md)
     @test occursin("Fallback Taxonomy", md)

@@ -115,10 +115,6 @@ export SchemaRunResult
 export AgreementResult
 export schema_warm_agreement
 
-# Schema report (C5)
-export print_schema_summary
-export report_schema_markdown
-
 # Warm-worker pool (M2)
 export FallbackReason
 export warm_ok, fallback_macro, fallback_typedef, fallback_const, fallback_evalerr, fallback_schema_ineligible

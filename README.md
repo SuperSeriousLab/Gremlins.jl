@@ -28,7 +28,7 @@ coverage-guided selection that skips mutants your tests cannot possibly reach.
 # From the Julia REPL, in your package directory:
 using Gremlins
 result = mutate_warm(".")   # warm pool, auto-discovers src/, runs test/runtests.jl
-print_warm_summary(result)
+print_summary(result)
 ```
 
 Or via the CLI:

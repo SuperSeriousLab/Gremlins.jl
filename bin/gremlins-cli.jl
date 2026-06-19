@@ -424,7 +424,7 @@ function main(argv::Vector{String})
             elog("ERROR: schema run failed: $e")
             exit(2)
         end
-        Gremlins.print_schema_summary(schema_result)
+        Gremlins.print_summary(schema_result)
         # Report auto-disable if fired
         if schema_result.auto_disabled
             st = round(schema_result.agreement_schema_time, digits=3)
@@ -448,7 +448,7 @@ function main(argv::Vector{String})
             elog("ERROR: warm run failed: $e")
             exit(2)
         end
-        Gremlins.print_warm_summary(warm_result)
+        Gremlins.print_summary(warm_result)
         # Report I4 mismatches
         if !isempty(warm_result.i4_mismatches)
             elog("WARNING: I4 warm/cold mismatches detected:")

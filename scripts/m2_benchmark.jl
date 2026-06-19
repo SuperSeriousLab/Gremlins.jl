@@ -167,7 +167,7 @@ println()
 println("  ── Kill-rate report (combined) ──")
 print_summary(cold_result)
 println()
-print_warm_summary(warm_result)
+print_summary(warm_result)
 
 println()
 println("━━━ END BENCHMARK ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
