@@ -670,42 +670,33 @@ end
 
 end  # @testset "Gremlins M0"
 
-# ─── M1 tests ────────────────────────────────────────────────────────────────
-include("runner_test.jl")
+# ─── Adaptive test selection (DEV SPEED ONLY) ────────────────────────────────
+# Pass filename fragments as ARGS or via GREMLINS_TESTS (comma/space-separated)
+# to run only matching test files — e.g. `julia --project test/runtests.jl schema
+# blame` or `GREMLINS_TESTS="schema blame" julia ... -e 'using Pkg; Pkg.test()'`.
+# No selector → the full suite runs. The inline M0 tests above always run (fast,
+# foundational). NOT A RELEASE GATE: CI and any release run the full suite — a
+# diff that looks local can break far-away tests via shared code (operators.jl,
+# discover.jl). Selection trades safety for speed; only the full run is trusted.
+const _TEST_SELECT = let
+    raw = isempty(ARGS) ? get(ENV, "GREMLINS_TESTS", "") : join(ARGS, " ")
+    Set(filter(!isempty, split(raw, r"[,\s]+")))
+end
+maybe(file) =
+    (isempty(_TEST_SELECT) || any(s -> occursin(s, file), _TEST_SELECT)) ?
+        include(file) : @info "skipping $file (not selected)"
 
-# ─── M2 tests ────────────────────────────────────────────────────────────────
-include("warm_test.jl")
-
-# ─── M3a CLI tests ────────────────────────────────────────────────────────────
-include("cli_test.jl")
-
-# ─── M2.1 papercut hardening tests ───────────────────────────────────────────
-include("papercut_test.jl")
-
-# ─── Feature A: git-diff scope tests ─────────────────────────────────────────
-include("test_diff_scope.jl")
-
-# ─── Feature B: Julia-idiom operators ────────────────────────────────────────
-include("test_idiom_operators.jl")
-
-# ─── Feature C: Mutant schemata (C1 + C2) ────────────────────────────────────
-include("test_schema.jl")
-
-# ─── Feature D: dispatch-mutation operators (v1) ──────────────────────────────
-include("test_dispatch_operators.jl")
-
-# ─── Feature 2: survivor-coverage blame ──────────────────────────────────────
-include("test_blame.jl")
-include("blame_fixture_test.jl")
-
-# ─── Bug fix: test-env deps (#2/#3) ──────────────────────────────────────────
-include("test_testenv.jl")
-
-# ─── Issue #4: unified diff per surviving mutant (Vimes parity) ──────────────
-include("test_diff.jl")
-
-# ─── Issue #5: ReTestItems/TestItemRunner layout in detect_units ──────────────
-include("test_retestitems.jl")
-
-# ─── Issue #7: parallel mutant execution ─────────────────────────────────────
-include("test_parallel.jl")
+maybe("runner_test.jl")            # M1 + report (print_summary/report_markdown/caution)
+maybe("warm_test.jl")              # M2 warm-worker pool
+maybe("cli_test.jl")               # M3a CLI
+maybe("papercut_test.jl")          # M2.1 hardening
+maybe("test_diff_scope.jl")        # Feature A: git-diff scope
+maybe("test_idiom_operators.jl")   # Feature B: idiom operators
+maybe("test_schema.jl")            # Feature C: mutant schemata
+maybe("test_dispatch_operators.jl")# Feature D: dispatch operators
+maybe("test_blame.jl")             # Feature 2: survivor-coverage blame
+maybe("blame_fixture_test.jl")
+maybe("test_testenv.jl")           # #2/#3: test-env deps
+maybe("test_diff.jl")              # #4: unified diff per survivor
+maybe("test_retestitems.jl")       # #5: ReTestItems layout
+maybe("test_parallel.jl")          # #7: parallel execution

@@ -13,6 +13,9 @@ JuliaTesting org pitch at M3). Design: docs/DESIGN.md (moved from eidos docs/ 20
 ```bash
 julia --project -e 'using Pkg; Pkg.instantiate()'
 julia --project -e 'using Pkg; Pkg.test()'
+# adaptive subset (DEV SPEED ONLY — never a release gate; CI runs full):
+# pass filename fragments to run only matching test files (M0 always runs).
+julia --project --check-bounds=no test/runtests.jl schema blame
 # self-mutate smoke (M0 acceptance):
 julia --project -e 'using Gremlins; Gremlins.discover("src") .|> println'
 ```
