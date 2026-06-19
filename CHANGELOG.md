@@ -3,6 +3,11 @@
 Notable changes per release. Format follows [Keep a Changelog](https://keepachangelog.com);
 versions follow Julia 0.x semver (a minor bump is the breaking slot).
 
+## [0.3.1] - 2026-06-19
+
+### Fixed
+- Test-only deps declared via `[sources]` (path/url) errored the whole campaign on Julia 1.10. `[sources]` is a 1.11+ feature, so on older Julia those source-backed deps are now skipped while registered deps still merge.
+
 ## [0.3.0] - 2026-06-18
 
 ### Added
