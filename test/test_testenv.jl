@@ -11,6 +11,37 @@
 #
 # Fixture: hermetic local package (no network) via test/Project.toml [sources].
 
+# ── Version filter unit test (runs on every Julia) ──────────────────────────
+# Falsifiability: fails if _drop_unsupported_source_deps! stops gating on 1.11.
+@testset "_drop_unsupported_source_deps! gates [sources] by Julia version" begin
+    mk() = (Dict("LocalHelper" => "uuid-1", "Registered" => "uuid-2"),
+            Dict("LocalHelper" => Dict("path" => "/tmp/x")))
+
+    # Julia < 1.11: source-backed dep dropped from both; registered dep kept.
+    deps, sources = mk()
+    dropped = Gremlins._drop_unsupported_source_deps!(deps, sources, v"1.10.0")
+    @test dropped == ["LocalHelper"]
+    @test !haskey(deps, "LocalHelper")
+    @test haskey(deps, "Registered")
+    @test isempty(sources)
+
+    # Julia ≥ 1.11: no-op, everything retained.
+    deps, sources = mk()
+    @test isempty(Gremlins._drop_unsupported_source_deps!(deps, sources, v"1.11.0"))
+    @test haskey(deps, "LocalHelper")
+    @test haskey(sources, "LocalHelper")
+
+    # No sources → no-op even on old Julia.
+    deps = Dict("Registered" => "uuid-2"); sources = Dict{String,Any}()
+    @test isempty(Gremlins._drop_unsupported_source_deps!(deps, sources, v"1.10.0"))
+    @test haskey(deps, "Registered")
+end
+
+# The hermetic fixture below uses test/Project.toml [sources] (path deps), a
+# Julia 1.11+ feature. On 1.10 the feature doesn't exist, so skip it there.
+if VERSION < v"1.11"
+    @info "Test-env deps (#2/#3): hermetic [sources] fixture needs Julia ≥ 1.11; skipping on $(VERSION)"
+else
 @testset "Test-env deps (#2/#3)" begin
 
     # ── Build hermetic fixture ──────────────────────────────────────────────────
@@ -163,3 +194,4 @@
 
     rm(tmpdir; recursive=true, force=true)
 end
+end  # VERSION >= v"1.11"

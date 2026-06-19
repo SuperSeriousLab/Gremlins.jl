@@ -140,6 +140,29 @@ end
 # ─── Test-dep augmentation ────────────────────────────────────────────────────
 
 """
+    _drop_unsupported_source_deps!(deps, sources, julia_version) -> Vector{String}
+
+`[sources]` (path/url deps) is a Julia 1.11+ feature; older Pkg ignores the table
+and would resolve a path dep from a registry (a hard failure). On `julia_version <
+1.11`, remove every source-backed dep from both `deps` and `sources` and return the
+names dropped (sorted, for a deterministic warning). On 1.11+ this is a no-op and
+returns an empty vector. Mutates both dicts in place.
+"""
+function _drop_unsupported_source_deps!(
+    deps::AbstractDict,
+    sources::AbstractDict,
+    julia_version::VersionNumber,
+)::Vector{String}
+    (julia_version >= v"1.11" || isempty(sources)) && return String[]
+    dropped = sort!(collect(keys(sources)))
+    for name in dropped
+        delete!(deps, name)
+    end
+    empty!(sources)
+    return dropped
+end
+
+"""
     _augment_shadow_with_test_deps(pkgdir, shadow_dir) -> Bool
 
 Merge non-stdlib test-only deps into the shadow's Project.toml so that
@@ -251,6 +274,14 @@ function _augment_shadow_with_test_deps(
             new_deps[name] = uuid
         end
     end
+
+    # ── Drop source-backed deps the running Julia can't resolve ───────────────
+    # [sources] (path/url deps) is a Julia 1.11+ Project.toml feature. On older
+    # Julia, Pkg ignores the table and tries to resolve the dep from a registry,
+    # which throws. Drop those deps + sources so the rest still merges.
+    dropped = _drop_unsupported_source_deps!(new_deps, new_sources, VERSION)
+    isempty(dropped) || @warn "test/Project.toml [sources] requires Julia ≥ 1.11; \
+        skipping source-backed test deps — they will be unavailable to the shadow" julia=VERSION deps=dropped
 
     # ── Fast-path: nothing to add ─────────────────────────────────────────────
     isempty(new_deps) && isempty(new_sources) && return false
