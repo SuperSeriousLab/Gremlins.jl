@@ -90,6 +90,25 @@ function mutation_score(r::RunResult)::Float64
     return n_killed / denom
 end
 
+"""
+    effective_score(r::RunResult) -> Float64
+
+Coverage-adjusted score = killed / (total - error): uncovered (`no_coverage`)
+sites count *against* you, infrastructure `error` mutants do not. Always ≤
+`mutation_score`. A perfect effective score requires killing every reachable
+mutant *and* reaching all of them, so it resists the inflated 100% that the
+standard score can show over a tiny covered subset. Report it alongside
+`mutation_score`, not instead — `killed/eligible` is the comparable standard.
+Returns NaN if the denominator is 0.
+"""
+function effective_score(r::RunResult)::Float64
+    n_killed = count(x -> x.outcome == killed, r.results)
+    n_err    = count(x -> x.outcome == error,  r.results)
+    denom    = length(r.results) - n_err
+    denom == 0 && return NaN
+    return n_killed / denom
+end
+
 # ─── Core runner ──────────────────────────────────────────────────────────────
 
 """

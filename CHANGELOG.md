@@ -6,6 +6,7 @@ versions follow Julia 0.x semver (a minor bump is the breaking slot).
 ## [0.4.0] - unreleased
 
 ### Added
+- `effective_score` — coverage-adjusted mutation score `killed / (total − error)`: uncovered (`no_coverage`) sites count against you, infrastructure `error` mutants do not. Always ≤ `mutation_score`, so a perfect effective score requires reaching *and* killing every mutant — a 100% over a tiny covered subset no longer reads as perfect. Reported alongside `mutation_score` (never replacing it) in console, Markdown, and JSON (`effective_score_pct`).
 - Score honesty: a perfect mutation score is annotated, not presented as a clean pass. Every 100% carries an equivalent-mutant caveat (those are undecidable, so they inflate any perfect score), and it escalates to a "barely challenged" warning when the run was easy on the signals Gremlins owns — few eligible sites, most of the discovered surface gated out (low eligible/total ratio), or kills from too few distinct operators. This is a relative caution to prompt investigation (EDD), never a pass/fail gate; thresholds are tunable constants. Markdown reports now show the eligible count, not just the percentage.
 
 ### Changed

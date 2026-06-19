@@ -87,6 +87,7 @@ export RunResult
 export run_mutations
 export mutate
 export mutation_score
+export effective_score
 
 # Report (M1)
 export report

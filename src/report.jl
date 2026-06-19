@@ -16,6 +16,8 @@ Emit a structured JSON report of the mutation run.
 function report_json(result::RunResult)::String
     score = mutation_score(result)
     score_pct = isnan(score) ? "null" : string(round(score * 100, digits=2))
+    eff = effective_score(result)
+    eff_pct = isnan(eff) ? "null" : string(round(eff * 100, digits=2))
 
     n_killed   = count(x -> x.outcome == killed,      result.results)
     n_survived = count(x -> x.outcome == survived,    result.results)
@@ -36,7 +38,8 @@ function report_json(result::RunResult)::String
     "timeout": $n_timeout,
     "no_coverage": $n_nocov,
     "error": $n_error,
-    "mutation_score_pct": $score_pct
+    "mutation_score_pct": $score_pct,
+    "effective_score_pct": $eff_pct
   },
   "baseline_elapsed_s": $(round(result.baseline_elapsed, digits=3)),
   "total_elapsed_s": $(round(result.total_elapsed, digits=3)),
@@ -144,6 +147,13 @@ function _md_score_line(score_str, killed::Integer, eligible::Integer, total::In
     isempty(c) ? base : base * "\n**⚠ $c**  "
 end
 
+# Markdown: coverage-adjusted score (uncovered sites count against; errors do not).
+function _md_eff_line(killed::Integer, total::Integer, n_err::Integer)::String
+    d = total - n_err
+    s = d == 0 ? "N/A" : "$(round(100 * killed / d, digits=1))%"
+    "**Effective score:** $s (killed=$killed / reachable=$d) — uncovered counts against  "
+end
+
 # ─── Markdown report ──────────────────────────────────────────────────────────
 
 """
@@ -170,6 +180,7 @@ function report_markdown(result::RunResult)::String
     push!(lines, "")
     push!(lines, "**Package:** `$(basename(result.pkgdir))`  ")
     push!(lines, _md_score_line(score_str, n_killed, length(result.results) - n_nocov - n_error, length(result.results), _landed_operators(result.results)))
+    push!(lines, _md_eff_line(n_killed, length(result.results), n_error))
     push!(lines, "**Baseline:** $(round(result.baseline_elapsed, digits=2))s  ")
     push!(lines, "**Total runtime:** $(round(result.total_elapsed, digits=2))s  ")
     push!(lines, "")
@@ -195,7 +206,7 @@ function report_markdown(result::RunResult)::String
         push!(lines, "|----|------|------|----------|------------------------|")
         for r in survived_results
             s = r.site
-            push!(lines, "| `$(s.id[1:8])` | `$(s.relpath)` | $(s.line) | $(s.op_name) | `$(repr(s.original))` → `$(repr(s.replacement))` |")
+            push!(lines, "| `$(first(s.id, 8))` | `$(s.relpath)` | $(s.line) | $(s.op_name) | `$(repr(s.original))` → `$(repr(s.replacement))` |")
         end
         push!(lines, "")
     end
@@ -271,7 +282,10 @@ function print_summary(result::RunResult)
 
     println("━━━ Gremlins Mutation Report ━━━━━━━━━━━━━━━━━━")
     println("  Package  : $(basename(result.pkgdir))")
+    eff = effective_score(result)
+    eff_str = isnan(eff) ? "N/A" : "$(round(eff * 100, digits=1))%"
     println("  Score    : $score_str  (killed=$n_killed / eligible=$(n_total - n_nocov - n_error))")
+    println("  Effective: $eff_str  (killed=$n_killed / reachable=$(n_total - n_error))  [uncovered counts against]")
     _print_score_caution(n_killed, n_total - n_nocov - n_error, n_total, _landed_operators(result.results))
     println("  Killed   : $n_killed")
     println("  Survived : $n_survived")
@@ -303,7 +317,10 @@ function print_summary(wr::WarmRunResult)
 
     println("━━━ Gremlins Warm Mutation Report ━━━━━━━━━━━━━━")
     println("  Package       : $(basename(run.pkgdir))")
+    eff = effective_score(run)
+    eff_str = isnan(eff) ? "N/A" : "$(round(eff * 100, digits=1))%"
     println("  Score         : $score_str  (killed=$n_killed / eligible=$(n_total - n_nocov - n_error))")
+    println("  Effective     : $eff_str  (killed=$n_killed / reachable=$(n_total - n_error))  [uncovered counts against]")
     _print_score_caution(n_killed, n_total - n_nocov - n_error, n_total, _landed_operators(run.results))
     println("  Killed        : $n_killed")
     println("  Survived      : $n_survived")
@@ -350,6 +367,7 @@ function report_markdown(wr::WarmRunResult)::String
     push!(lines, "")
     push!(lines, "**Package:** `$(basename(run.pkgdir))`  ")
     push!(lines, _md_score_line(score_str, n_killed, length(run.results) - n_nocov - n_error, length(run.results), _landed_operators(run.results)))
+    push!(lines, _md_eff_line(n_killed, length(run.results), n_error))
     push!(lines, "**Baseline:** $(round(run.baseline_elapsed, digits=2))s  ")
     push!(lines, "**Total runtime:** $(round(run.total_elapsed, digits=2))s  ")
     push!(lines, "**Cache hits:** $(wr.cache_hits)  ")
@@ -401,7 +419,10 @@ function print_summary(sr::SchemaRunResult)
 
     println("━━━ Gremlins Schema Mutation Report ━━━━━━━━━━━━")
     println("  Package      : $(basename(run.pkgdir))")
+    eff = (n_total - sr.error) == 0 ? NaN : sr.killed / (n_total - sr.error)
+    eff_str = isnan(eff) ? "N/A" : "$(round(eff * 100, digits=1))%"
     println("  Score        : $score_str  (killed=$(sr.killed) / eligible=$(n_total - sr.no_coverage - sr.error))")
+    println("  Effective    : $eff_str  (killed=$(sr.killed) / reachable=$(n_total - sr.error))  [uncovered counts against]")
     _print_score_caution(sr.killed, n_total - sr.no_coverage - sr.error, n_total, _landed_operators(run.results))
     println("  Killed       : $(sr.killed)")
     println("  Survived     : $(sr.survived)")
@@ -435,6 +456,7 @@ function report_markdown(sr::SchemaRunResult)::String
     push!(lines, "")
     push!(lines, "**Package:** `$(basename(run.pkgdir))`  ")
     push!(lines, _md_score_line(score_str, sr.killed, length(run.results) - sr.no_coverage - sr.error, length(run.results), _landed_operators(run.results)))
+    push!(lines, _md_eff_line(sr.killed, length(run.results), sr.error))
     push!(lines, "**Baseline:** $(round(run.baseline_elapsed, digits=2))s  ")
     push!(lines, "**Total runtime:** $(round(run.total_elapsed, digits=2))s  ")
     push!(lines, "**schema-ran:** $(sr.schema_ran)   **warm-fallback:** $(sr.warm_fallback)  ")

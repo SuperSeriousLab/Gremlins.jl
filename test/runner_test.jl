@@ -260,6 +260,31 @@ end
     @test string(result) isa String
 end
 
+@testset "Runner — effective_score (coverage-adjusted)" begin
+    mk(op) = MutationSite(rpad("id-$op", 16, '0'), "src/f.jl", 1:1, Symbol(op), op, "a", "b", 1)  # 16-char id like mutant_id
+    r(outcome; op="x") = MutantResult(mk(op), outcome, 0.0, "")
+    rr(results) = RunResult("/p", [x.site for x in results], results, 1.0, 1.0)
+
+    # 4 killed, 1 survived, 3 no_coverage, 1 error → total=9, error=1, nocov=3
+    R = rr(vcat([r(killed) for _ in 1:4], r(survived),
+               [r(no_coverage) for _ in 1:3], r(Gremlins.error)))
+    @test mutation_score(R)  ≈ 0.8   # killed/(total−nocov−error) = 4/5
+    @test effective_score(R) ≈ 0.5   # killed/(total−error)       = 4/8
+    @test effective_score(R) < mutation_score(R)   # uncovered counts against
+
+    # No uncovered sites → effective == mutation.
+    R2 = rr(vcat([r(killed) for _ in 1:3], r(survived)))
+    @test effective_score(R2) ≈ mutation_score(R2)
+
+    # All-error / empty → NaN (no reachable denominator).
+    @test isnan(effective_score(rr([r(Gremlins.error)])))
+    @test isnan(effective_score(rr(MutantResult[])))
+
+    # Surfaced in both report formats.
+    @test occursin("effective_score_pct", report(R; format=:json))
+    @test occursin("Effective score", report(R; format=:markdown))
+end
+
 # ─── Report: Markdown ─────────────────────────────────────────────────────────
 @testset "Report — markdown format" begin
     result = M1_RESULT_PLUS
