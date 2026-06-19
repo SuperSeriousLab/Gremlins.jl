@@ -272,6 +272,32 @@ end
     @test occursin("MiniTarget", md)
 end
 
+# ─── Report: score caution (EDD — a perfect score is a red flag, not a trophy) ──
+@testset "Report — score caution (relative trigger)" begin
+    sc = Gremlins._score_caution  # (killed, eligible, total, n_ops)
+    # Only a perfect score triggers anything.
+    @test sc(8, 20, 25, 5) == ""          # imperfect → silent regardless of signals
+    @test sc(0, 0, 0, 0) == ""            # NaN score / no eligible
+    # Perfect + healthy signals → soft equivalent-mutant caveat only.
+    let c = sc(40, 40, 45, 6)
+        @test occursin("perfect score", c)
+        @test occursin("equivalent mutants", c)
+        @test !occursin("barely challenged", c)
+    end
+    # Perfect + weak signals → escalated "barely challenged" with the reason.
+    @test occursin("barely challenged", sc(3, 3, 30, 5))      # low eligible count
+    @test occursin("gated out", sc(3, 3, 30, 5))             # and low eligible/total ratio
+    @test occursin("operator", sc(40, 40, 45, 1))            # single-operator kills
+    # Each sub-condition fires independently.
+    @test occursin("only 5 eligible", sc(5, 5, 6, 4))        # low count, good ratio+ops
+    # Markdown surfaces eligible denominator always; ⚠ only when cautioned.
+    @test occursin("eligible=40", Gremlins._md_score_line("100.0%", 40, 40, 45, 6))
+    @test occursin("⚠", Gremlins._md_score_line("100.0%", 3, 3, 30, 1))
+    @test !occursin("⚠", Gremlins._md_score_line("40.0%", 8, 20, 25, 5))
+    # _landed_operators counts distinct ops over executed (not gated) mutants.
+    @test Gremlins._landed_operators(MutantResult[]) == 0
+end
+
 # ─── Report: JSON ─────────────────────────────────────────────────────────────
 @testset "Report — json format" begin
     result = M1_RESULT_PLUS

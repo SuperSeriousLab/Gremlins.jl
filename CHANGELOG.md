@@ -5,6 +5,9 @@ versions follow Julia 0.x semver (a minor bump is the breaking slot).
 
 ## [0.4.0] - unreleased
 
+### Added
+- Score honesty: a perfect mutation score is annotated, not presented as a clean pass. Every 100% carries an equivalent-mutant caveat (those are undecidable, so they inflate any perfect score), and it escalates to a "barely challenged" warning when the run was easy on the signals Gremlins owns — few eligible sites, most of the discovered surface gated out (low eligible/total ratio), or kills from too few distinct operators. This is a relative caution to prompt investigation (EDD), never a pass/fail gate; thresholds are tunable constants. Markdown reports now show the eligible count, not just the percentage.
+
 ### Changed
 - **Breaking:** report and summary functions are unified onto multiple dispatch. `print_warm_summary` and `print_schema_summary` are now methods of `print_summary`; `report_warm_markdown` and `report_schema_markdown` are now methods of `report_markdown`. The argument type selects the variant. The suffixed names are removed — call `print_summary` / `report_markdown` instead.
 

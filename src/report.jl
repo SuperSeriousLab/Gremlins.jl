@@ -87,6 +87,63 @@ function JSON_str(s::AbstractString)::String
     String(take!(buf))
 end
 
+# ─── Score honesty ────────────────────────────────────────────────────────────
+# A perfect score (killed == eligible) or a tiny eligible set is a red flag in
+# mutation testing, not a pass: equivalent mutants (which cannot change behaviour)
+# inflate the kill rate, and few eligible sites means the suite was barely
+# challenged. EDD: a perfect score is a prompt to widen operators, not a trophy.
+
+# ponytail: heuristic thresholds; tune if the alert is too chatty or too quiet.
+const LOW_ELIGIBLE_THRESHOLD = 10    # eligible sites below this = barely challenged
+const LOW_ELIGIBLE_RATIO     = 0.5   # eligible/total below this = most surface untested
+const LOW_OPERATOR_DIVERSITY = 2     # distinct operators that produced eligible mutants
+
+"""
+    _landed_operators(results) -> Int
+
+Count distinct operators that produced an *executed* mutant (killed/survived/timeout
+— i.e. eligible, not gated out as no_coverage/error). Low diversity means a perfect
+score came from one trivial operator, not the full set.
+"""
+_landed_operators(results) =
+    length(Set(r.site.op_id for r in results if r.outcome in (killed, survived, timeout)))
+
+"""
+    _score_caution(killed, eligible, total, n_ops) -> String
+
+Interpretive warning to print alongside a mutation score, or `""` when none applies.
+A perfect score is never a clean pass: equivalent mutants (undecidable, so we can't
+detect them) inflate any 100%, so a perfect score always earns at least a caveat. It
+escalates to "barely challenged" when the run was easy on the available signals — few
+eligible sites, most of the discovered surface gated out, or kills from too few
+operators. This is a relative trigger, deliberately not a pass/fail gate.
+"""
+function _score_caution(killed::Integer, eligible::Integer, total::Integer, n_ops::Integer)::String
+    (eligible <= 0 || killed < eligible) && return ""   # only a perfect score triggers
+    reasons = String[]
+    eligible < LOW_ELIGIBLE_THRESHOLD && push!(reasons, "only $eligible eligible site(s)")
+    total > 0 && eligible / total < LOW_ELIGIBLE_RATIO &&
+        push!(reasons, "$(round(Int, 100 * (1 - eligible / total)))% of discovered sites gated out")
+    n_ops < LOW_OPERATOR_DIVERSITY && push!(reasons, "kills from only $n_ops operator(s)")
+    isempty(reasons) &&
+        return "perfect score — note: equivalent mutants can still inflate a clean 100%"
+    return "perfect score but the suite was barely challenged (" * join(reasons, "; ") *
+           ") — widen operators / coverage before trusting this"
+end
+
+# Console: print an indented caution line when the score warrants one.
+function _print_score_caution(killed::Integer, eligible::Integer, total::Integer, n_ops::Integer)
+    c = _score_caution(killed, eligible, total, n_ops)
+    isempty(c) || println("  ⚠ $c")
+end
+
+# Markdown: a score line that surfaces the eligible denominator and any caution.
+function _md_score_line(score_str, killed::Integer, eligible::Integer, total::Integer, n_ops::Integer)::String
+    c = _score_caution(killed, eligible, total, n_ops)
+    base = "**Mutation Score:** $score_str (killed=$killed / eligible=$eligible)  "
+    isempty(c) ? base : base * "\n**⚠ $c**  "
+end
+
 # ─── Markdown report ──────────────────────────────────────────────────────────
 
 """
@@ -112,7 +169,7 @@ function report_markdown(result::RunResult)::String
     push!(lines, "# Gremlins Mutation Report")
     push!(lines, "")
     push!(lines, "**Package:** `$(basename(result.pkgdir))`  ")
-    push!(lines, "**Mutation Score:** $score_str  ")
+    push!(lines, _md_score_line(score_str, n_killed, length(result.results) - n_nocov - n_error, length(result.results), _landed_operators(result.results)))
     push!(lines, "**Baseline:** $(round(result.baseline_elapsed, digits=2))s  ")
     push!(lines, "**Total runtime:** $(round(result.total_elapsed, digits=2))s  ")
     push!(lines, "")
@@ -215,6 +272,7 @@ function print_summary(result::RunResult)
     println("━━━ Gremlins Mutation Report ━━━━━━━━━━━━━━━━━━")
     println("  Package  : $(basename(result.pkgdir))")
     println("  Score    : $score_str  (killed=$n_killed / eligible=$(n_total - n_nocov - n_error))")
+    _print_score_caution(n_killed, n_total - n_nocov - n_error, n_total, _landed_operators(result.results))
     println("  Killed   : $n_killed")
     println("  Survived : $n_survived")
     println("  Timeout  : $n_timeout")
@@ -246,6 +304,7 @@ function print_summary(wr::WarmRunResult)
     println("━━━ Gremlins Warm Mutation Report ━━━━━━━━━━━━━━")
     println("  Package       : $(basename(run.pkgdir))")
     println("  Score         : $score_str  (killed=$n_killed / eligible=$(n_total - n_nocov - n_error))")
+    _print_score_caution(n_killed, n_total - n_nocov - n_error, n_total, _landed_operators(run.results))
     println("  Killed        : $n_killed")
     println("  Survived      : $n_survived")
     println("  Timeout       : $n_timeout")
@@ -290,7 +349,7 @@ function report_markdown(wr::WarmRunResult)::String
     push!(lines, "# Gremlins Warm Mutation Report (M2)")
     push!(lines, "")
     push!(lines, "**Package:** `$(basename(run.pkgdir))`  ")
-    push!(lines, "**Mutation Score:** $score_str  ")
+    push!(lines, _md_score_line(score_str, n_killed, length(run.results) - n_nocov - n_error, length(run.results), _landed_operators(run.results)))
     push!(lines, "**Baseline:** $(round(run.baseline_elapsed, digits=2))s  ")
     push!(lines, "**Total runtime:** $(round(run.total_elapsed, digits=2))s  ")
     push!(lines, "**Cache hits:** $(wr.cache_hits)  ")
@@ -343,6 +402,7 @@ function print_summary(sr::SchemaRunResult)
     println("━━━ Gremlins Schema Mutation Report ━━━━━━━━━━━━")
     println("  Package      : $(basename(run.pkgdir))")
     println("  Score        : $score_str  (killed=$(sr.killed) / eligible=$(n_total - sr.no_coverage - sr.error))")
+    _print_score_caution(sr.killed, n_total - sr.no_coverage - sr.error, n_total, _landed_operators(run.results))
     println("  Killed       : $(sr.killed)")
     println("  Survived     : $(sr.survived)")
     println("  Timeout      : $(sr.timeout)")
@@ -374,7 +434,7 @@ function report_markdown(sr::SchemaRunResult)::String
     push!(lines, "# Gremlins Schema Mutation Report (C5)")
     push!(lines, "")
     push!(lines, "**Package:** `$(basename(run.pkgdir))`  ")
-    push!(lines, "**Mutation Score:** $score_str  ")
+    push!(lines, _md_score_line(score_str, sr.killed, length(run.results) - sr.no_coverage - sr.error, length(run.results), _landed_operators(run.results)))
     push!(lines, "**Baseline:** $(round(run.baseline_elapsed, digits=2))s  ")
     push!(lines, "**Total runtime:** $(round(run.total_elapsed, digits=2))s  ")
     push!(lines, "**schema-ran:** $(sr.schema_ran)   **warm-fallback:** $(sr.warm_fallback)  ")
