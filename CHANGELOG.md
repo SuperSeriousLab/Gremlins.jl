@@ -3,7 +3,7 @@
 Notable changes per release. Format follows [Keep a Changelog](https://keepachangelog.com);
 versions follow Julia 0.x semver (a minor bump is the breaking slot).
 
-## [0.4.0] - unreleased
+## [0.4.0] - 2026-06-19
 
 ### Added
 - `effective_score` — coverage-adjusted mutation score `killed / (total − error)`: uncovered (`no_coverage`) sites count against you, infrastructure `error` mutants do not. Always ≤ `mutation_score`, so a perfect effective score requires reaching *and* killing every mutant — a 100% over a tiny covered subset no longer reads as perfect. Reported alongside `mutation_score` (never replacing it) in console, Markdown, and JSON (`effective_score_pct`).
