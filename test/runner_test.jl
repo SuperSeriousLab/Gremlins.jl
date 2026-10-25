@@ -359,3 +359,25 @@ end
 end
 
 end  # @testset "Gremlins M1"
+
+@testset "Coverage — continuation lines inherit their statement's coverage" begin
+    source = "function f(x)\n    y = g(x,\n            x + 1)\n    return y\nend\n"
+    covered = Set([2, 4])
+    executable = Set([2, 4])
+    expanded = Gremlins.statement_coverage(source, covered, executable)
+    @test expanded == Set(1:5)
+    @test 3 ∉ Gremlins.statement_coverage(source, Set([4]), executable)
+end
+
+@testset "Coverage — a documented function's signature lines inherit its body's coverage" begin
+    source = "\"\"\"doc\"\"\"\nfunction f(x)::typeof(\n    x * 2,\n)\n    return x * 2\nend\n\"\"\"doc\"\"\"\ng(x) = h(\n    x - 1,\n)\n"
+    @test Gremlins.statement_coverage(source, Set([5, 8]), Set([5, 8])) ⊇ Set([2, 3, 4, 9, 10])
+    @test isempty(Gremlins.statement_coverage(source, Set{Int}(), Set([5, 8])))
+end
+
+@testset "Coverage — struct fields inherit the struct's coverage; inner constructors keep their own" begin
+    source = "struct S\n    a::Int\n    b::Int\n    S(a) = new(\n        a, 2)\nend\n"
+    @test Set([2, 3]) ⊆ Gremlins.statement_coverage(source, Set([1]), Set([1, 4]))
+    @test 5 ∉ Gremlins.statement_coverage(source, Set([1]), Set([1, 4]))
+    @test 5 in Gremlins.statement_coverage(source, Set([1, 4]), Set([1, 4]))
+end
