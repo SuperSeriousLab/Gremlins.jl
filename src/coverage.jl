@@ -134,7 +134,8 @@ function baseline_run(
             end
             throw(MutationError(
                 "baseline_run: test suite failed with exit code $exit_code — " *
-                "fix tests before running mutation testing"
+                "fix tests before running mutation testing. Output tail:\n" *
+                join(last(split(output, '\n'), 40), '\n')
             ))
         end
 
