@@ -258,8 +258,8 @@ end
     _run_with_timeout(cmd, timeout_secs) -> (exit_code, output::String)
 
 Run `cmd` capturing combined stdout+stderr. Returns `:timeout` as exit code
-if the process exceeds `timeout_secs`. Output is capped internally for memory
-safety but not returned in full (runner classifies by exit code, not output).
+if the process exceeds `timeout_secs`, and `128 + signal` for a process a signal
+killed (a segfault), whose `exitcode` is 0.
 """
 function _run_with_timeout(cmd::Cmd, timeout_secs::Float64)::Tuple{Any, String}
     buf = IOBuffer()
@@ -283,5 +283,6 @@ function _run_with_timeout(cmd::Cmd, timeout_secs::Float64)::Tuple{Any, String}
         sleep(0.05)
     end
     wait(proc)
-    return (proc.exitcode, String(take!(buf)))
+    exit_code = proc.termsignal == 0 ? proc.exitcode : 128 + proc.termsignal
+    return (exit_code, String(take!(buf)))
 end
