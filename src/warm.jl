@@ -468,7 +468,7 @@ function _run_cold_single(
     try
         apply!(site, shadow_abs_path)
         jl = _julia_exe()
-        cmd = Cmd([jl, "--project=$shadow_dir", shadow_test_path])
+        cmd = Cmd([jl, "--startup-file=no", "--project=$shadow_dir", shadow_test_path])
         exit_code, _ = _run_with_timeout(cmd, timeout_secs)
 
         outcome = if exit_code == :timeout

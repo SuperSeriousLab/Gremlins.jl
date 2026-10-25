@@ -109,7 +109,7 @@ function baseline_run(
         shadow_test_path = joinpath(shadow, test_dir, test_file)
 
         jl = _julia_exe()
-        cmd = Cmd([jl, "--project=$shadow", "--code-coverage=user", shadow_test_path])
+        cmd = Cmd([jl, "--startup-file=no", "--project=$shadow", "--code-coverage=user", shadow_test_path])
 
         t0 = time()
         exit_code, output = _run_with_timeout(cmd, timeout)

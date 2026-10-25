@@ -272,7 +272,7 @@ function run_mutations(
                     apply!(site, shadow_abs_path)
 
                     # 4. Run test subprocess against shadow project
-                    cmd = Cmd([jl, "--project=$shadow", shadow_test_path])
+                    cmd = Cmd([jl, "--startup-file=no", "--project=$shadow", shadow_test_path])
                     exit_code, _ = _run_with_timeout(cmd, derived_timeout)
 
                     if exit_code == :timeout
@@ -416,7 +416,7 @@ function run_mutations(
                             try
                                 apply!(_site, shadow_abs_path)
 
-                                cmd = Cmd([jl, "--project=$sh", shadow_test_path])
+                                cmd = Cmd([jl, "--startup-file=no", "--project=$sh", shadow_test_path])
                                 exit_code, _ = _run_with_timeout(cmd, derived_timeout)
 
                                 if exit_code == :timeout

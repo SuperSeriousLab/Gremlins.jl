@@ -54,7 +54,7 @@ function _spawn_worker(
     # Two separate pipes for bidirectional communication:
     # pipe_in:  parent writes to .in → child reads from stdin (.out)
     # pipe_out: child writes to stdout (.in) → parent reads from .out
-    cmd = Cmd([jl, "--project=$pkgdir", worker_script, pkg_name])
+    cmd = Cmd([jl, "--startup-file=no", "--project=$pkgdir", worker_script, pkg_name])
 
     p_in  = Base.Pipe()
     p_out = Base.Pipe()

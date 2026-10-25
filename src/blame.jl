@@ -230,7 +230,7 @@ function per_unit_coverage(pkgdir::AbstractString;
         for u in units
             _rm_cov_files(shadow)
             write(driver_path, u.driver)
-            cmd = Cmd([jl, "--project=$shadow", "--code-coverage=user", driver_path])
+            cmd = Cmd([jl, "--startup-file=no", "--project=$shadow", "--code-coverage=user", driver_path])
             exit_code, _ = _run_with_timeout(cmd, timeout)
             rm(driver_path; force=true)
             # Remove any .cov files the driver emitted so _collect_coverage
