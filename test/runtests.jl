@@ -224,6 +224,8 @@ end
         "g(x) = !x",
         "h(x) = x + 42",
         "k() = true",
+        "function m(s)\n    τ = s.τ\n    return τ + 1\nend",
+        "ξ(x) = x < 5 ? \"α\" : \"β\"",
     ]
     for src in srcs
         sites = sites_for(src)

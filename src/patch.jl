@@ -22,18 +22,16 @@ Throws `MutationError` if the byte range doesn't match `site.original`
 """
 function apply(site::MutationSite, source::AbstractString)::String
     br = site.byte_range
-    # Validate: check that the source region still matches expected original
-    sr = max(1, first(br)):min(ncodeunits(source), last(br))
-    if source[sr] != site.original
+    # A byte range can end inside a multibyte character, so slice code units, not characters.
+    units = codeunits(source)
+    found = String(units[max(1, first(br)):min(length(units), last(br))])
+    if found != site.original
         throw(MutationError(
             "apply: source mismatch at $(site.relpath):$(first(br))-$(last(br)); " *
-            "expected $(repr(site.original)), found $(repr(source[sr]))"
+            "expected $(repr(site.original)), found $(repr(found))"
         ))
     end
-    # Splice: prefix + replacement + suffix
-    prefix  = source[1:prevind(source, first(br))]
-    suffix  = source[nextind(source, last(br)):end]
-    return prefix * site.replacement * suffix
+    return String(units[1:first(br)-1]) * site.replacement * String(units[last(br)+1:end])
 end
 
 """
@@ -58,16 +56,14 @@ function revert(site::MutationSite, mutated::AbstractString)::String
         ))
     end
 
-    actual_rep = mutated[rep_start:rep_end]
+    units = codeunits(mutated)
+    actual_rep = String(units[rep_start:rep_end])
     if actual_rep != site.replacement
         throw(MutationError(
             "revert: replacement mismatch; expected $(repr(site.replacement)), found $(repr(actual_rep))"
         ))
     end
-
-    prefix = mutated[1:prefix_len]
-    suffix = mutated[nextind(mutated, rep_end):end]
-    return prefix * site.original * suffix
+    return String(units[1:prefix_len]) * site.original * String(units[rep_end+1:end])
 end
 
 # ─── In-place file patching ───────────────────────────────────────────────────
